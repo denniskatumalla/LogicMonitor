@@ -4,11 +4,13 @@
  * Reads the leaf certificate from a TLS endpoint and reports its remaining
  * lifetime. Deliberately does NOT validate the chain: an expired or
  * self-signed certificate must still be readable, otherwise the module goes
- * blind at exactly the moment it matters. Trust is a separate concern.
+ * blind at exactly the moment it matters. Trust is a separate concern,
+ * reported by chainTrusted from a second, fully validating handshake.
  */
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLParameters
 import javax.net.ssl.SSLSocket
+import javax.net.ssl.SSLSocketFactory
 import javax.net.ssl.SNIHostName
 import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
@@ -34,21 +36,34 @@ def trustAll = [ new X509TrustManager() {
     X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0] }
 } ] as TrustManager[]
 
+// Connects and completes a handshake; caller closes the returned socket.
+// verifyHost adds the same hostname check a browser does.
+def handshake = { SSLSocketFactory factory, boolean verifyHost ->
+    SSLSocket s = factory.createSocket() as SSLSocket
+    try {
+        s.connect(new InetSocketAddress(host, port), 10000)
+        s.soTimeout = 10000
+
+        // Send SNI, or a multi-tenant endpoint hands back the wrong certificate.
+        SSLParameters params = s.getSSLParameters()
+        params.setServerNames([new SNIHostName(host)])
+        if (verifyHost) params.setEndpointIdentificationAlgorithm("HTTPS")
+        s.setSSLParameters(params)
+
+        s.startHandshake()
+        return s
+    } catch (Exception e) {
+        try { s.close() } catch (Exception ignored) { }
+        throw e
+    }
+}
+
 SSLSocket sock = null
 try {
     def ctx = SSLContext.getInstance("TLS")
     ctx.init(null, trustAll, new java.security.SecureRandom())
 
-    sock = ctx.socketFactory.createSocket() as SSLSocket
-    sock.connect(new InetSocketAddress(host, port), 10000)
-    sock.soTimeout = 10000
-
-    // Send SNI, or a multi-tenant endpoint hands back the wrong certificate.
-    SSLParameters params = sock.getSSLParameters()
-    params.setServerNames([new SNIHostName(host)])
-    sock.setSSLParameters(params)
-
-    sock.startHandshake()
+    sock = handshake(ctx.socketFactory, false)
 
     def chain = sock.session.peerCertificates
     X509Certificate leaf = (X509Certificate) chain[0]
@@ -57,10 +72,21 @@ try {
     long days = (leaf.notAfter.time - now).intdiv(86400000L)
     long age  = (now - leaf.notBefore.time).intdiv(86400000L)
 
+    // Second handshake through the JVM's default trust store. Any failure here
+    // counts as untrusted; reachability is already reported by handshakeOk.
+    int trusted = 0
+    try {
+        handshake(SSLContext.getDefault().socketFactory, true).close()
+        trusted = 1
+    } catch (Exception e) {
+        System.err.println("chainTrusted=0: ${e}")
+    }
+
     println "handshakeOk=1"
     println "daysUntilExpiry=${days}"
     println "daysSinceIssued=${age}"
     println "chainLength=${chain.size()}"
+    println "chainTrusted=${trusted}"
     return 0
 
 } catch (Exception e) {
@@ -70,6 +96,7 @@ try {
     println "daysUntilExpiry=-1"
     println "daysSinceIssued=-1"
     println "chainLength=0"
+    println "chainTrusted=0"
     e.printStackTrace()
     return 0
 
