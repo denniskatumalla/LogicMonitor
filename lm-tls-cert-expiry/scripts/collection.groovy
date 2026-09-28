@@ -92,11 +92,9 @@ try {
 } catch (Exception e) {
     // Return 0, not 1. A non-zero exit means "no data" -> NaN -> nothing to
     // alert on, so a hard failure would render as monitoring silence.
+    // Only handshakeOk is emitted: the other keys go NaN, so one outage raises
+    // one alert rather than a second, misleading "expires in -1 days".
     println "handshakeOk=0"
-    println "daysUntilExpiry=-1"
-    println "daysSinceIssued=-1"
-    println "chainLength=0"
-    println "chainTrusted=0"
     e.printStackTrace()
     return 0
 

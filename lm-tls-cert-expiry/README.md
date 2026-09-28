@@ -84,7 +84,7 @@ counter and derive types would be wrong here.
 
 | Datapoint | Meaning | Threshold |
 |---|---|---|
-| `handshakeOk` | `1` if a TLS handshake completed, `0` if the endpoint could not be reached or refused TLS | `!= 1` → critical |
+| `handshakeOk` | `1` if a TLS handshake completed, `0` if the endpoint could not be reached or refused TLS. When it is `0`, the other four datapoints are `NaN` | `!= 1` → critical |
 | `daysUntilExpiry` | Whole days until the leaf certificate's `notAfter`; negative once expired | `< 30` warn, `< 14` error, `< 7` critical |
 | `daysSinceIssued` | Whole days since `notBefore` | none (context; a sudden drop means the cert was reissued) |
 | `chainLength` | Certificates the server presented | none (a drop to 1 on a public site usually means a missing intermediate) |
@@ -119,9 +119,13 @@ as missing data rather than an alert. Instead, the script always exits 0 and
 reports a failure as `handshakeOk=0`, which is alertable. Exception details go
 to stderr for the collector logs.
 
-On failure the other datapoints report sentinel values (`daysUntilExpiry=-1`,
-`chainLength=0`, `chainTrusted=0`), so one unreachable endpoint also trips the
-expiry and trust thresholds.
+On failure, the script prints only `handshakeOk=0`. The other datapoints are
+left out on purpose, so they record `NaN` for that poll. The alternative was
+sentinel values such as `daysUntilExpiry=-1`, but that would cross the
+critical expiry threshold. One outage would then raise two critical alerts,
+and the second would wrongly say the certificate expires in -1 days. With this
+approach, each failure raises exactly one alert, and it names the actual
+problem. On graphs, an outage shows up as a gap in the expiry line.
 
 ## Collector requirements
 
@@ -144,6 +148,9 @@ Cost: two TLS handshakes per endpoint per hour.
 - **Implicit TLS only.** Protocols that upgrade with STARTTLS (SMTP 25/587,
   LDAP 389, IMAP 143, PostgreSQL) are not supported. The handshake fails and
   reports `handshakeOk=0`.
+- **No expiry data while unreachable.** When the handshake fails, no expiry is
+  recorded for that poll. A certificate that crosses a threshold during an
+  outage alerts on the first successful poll afterwards.
 - **No client-certificate (mutual TLS) authentication.** Endpoints that
   require a client cert may fail the handshake.
 - **No proxy support.** The collector needs a direct route to each endpoint.
