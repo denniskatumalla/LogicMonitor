@@ -16,18 +16,21 @@ import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
 import java.security.cert.X509Certificate
 
-// LogicMonitor substitutes this token before execution. If it arrives literal,
-// we're running locally -- fall back to an argument. Same guard, two purposes.
-// binding.hasVariable: the collector doesn't bind `args`, so a bare reference would throw.
-def wildvalue = "##WILDVALUE##"
-if (wildvalue.startsWith("##")) {
+// On the collector, discovery's auto.tls.* instance properties say where to
+// connect. Locally there are no instanceProps, so take host[:port] from an
+// argument. binding.hasVariable, because a bare reference to an unbound
+// variable throws.
+String host
+Integer port
+if (binding.hasVariable("instanceProps") && instanceProps.get("auto.tls.host")) {
+    host = instanceProps.get("auto.tls.host")
+    port = (instanceProps.get("auto.tls.port") ?: "443") as Integer
+} else {
     def cli = binding.hasVariable("args") ? args : null
-    wildvalue = (cli && cli.length > 0) ? cli[0] : "www.logicmonitor.com:443"
+    def bits = ((cli && cli.length > 0) ? cli[0] : "www.logicmonitor.com:443").tokenize(":")
+    host = bits[0]
+    port = (bits.size() > 1 ? bits[1] : "443") as Integer
 }
-
-def bits = wildvalue.tokenize(":")
-def host = bits[0]
-def port = (bits.size() > 1 ? bits[1] : "443") as Integer
 
 // Read-only trust manager: accept anything so we can inspect the certificate.
 def trustAll = [ new X509TrustManager() {
