@@ -5,6 +5,9 @@ A LogicMonitor DataSource that reports how long the TLS certificate on any
 answered at all. Endpoints are listed in a single resource property; the
 module discovers and monitors them with no manual assignment.
 
+For architecture diagrams, quick-start commands, deployment and
+troubleshooting, see **[docs/DOCUMENTATION.md](docs/DOCUMENTATION.md)**.
+
 ## Contract
 
 ```
@@ -179,6 +182,8 @@ Cost: two TLS handshakes per endpoint per hour.
 ## Repository layout
 
 ```
+docs/DOCUMENTATION.md                Architecture, quick start, deployment
+                                     and operations guide
 module/TLS_Certificate_Expiry.json   The DataSource definition: AppliesTo,
                                      intervals, datapoints, thresholds, messages
 scripts/active_discovery.groovy      Active Discovery script
