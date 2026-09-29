@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Runs the LogicMonitor collector simulator. Paths are relative to this repo.
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")"
+out=build/classes
+if [[ ! -d $out ]] || [[ -n $(find sim -name '*.groovy' -newer "$out" -print -quit) ]]; then
+  rm -rf "$out" && mkdir -p "$out"
+  groovyc -d "$out" $(ls sim/*.groovy | grep -v '/lmsim.groovy$')
+  touch "$out"
+fi
+exec groovy -cp "$out" sim/lmsim.groovy "$@"

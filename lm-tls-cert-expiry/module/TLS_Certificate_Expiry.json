@@ -1,0 +1,72 @@
+{
+  "_comment": "Module definition for the lmsim collector simulator and the source of truth for building the DataSource in a portal. Not LogicMonitor's export format.",
+  "name": "TLS_Certificate_Expiry-",
+  "displayName": "TLS Certificate Expiry",
+  "description": "Monitors remaining lifetime of TLS certificates on arbitrary endpoints.",
+  "group": "Security",
+  "appliesTo": "tls.endpoints =~ \".+\"",
+  "multiInstance": true,
+  "collectIntervalSeconds": 3600,
+  "activeDiscovery": {
+    "scheduleSeconds": 3600,
+    "method": "script/embeddedGroovy",
+    "script": "../scripts/active_discovery.groovy"
+  },
+  "collection": {
+    "method": "script/embeddedGroovy",
+    "script": "../scripts/collection.groovy",
+    "timeoutSeconds": 60
+  },
+  "alertMessage": {
+    "subject": "TLS cert on ##INSTANCE## expires in ##VALUE## days (##HOST##)",
+    "body": "Datapoint ##DATAPOINT## on ##INSTANCE## is ##VALUE##, crossing threshold ##THRESHOLD##. Renew before expiry.\nResource: ##HOST##   Level: ##LEVEL##"
+  },
+  "datapoints": [
+    {
+      "name": "handshakeOk",
+      "description": "1 if a TLS handshake completed, 0 if the endpoint was unreachable or refused TLS.",
+      "type": "gauge",
+      "postProcessor": "keyValue",
+      "key": "handshakeOk",
+      "threshold": { "op": "!=", "critical": 1 },
+      "alertMessage": {
+        "subject": "TLS handshake failed on ##INSTANCE## (##HOST##)",
+        "body": "Could not complete a TLS handshake with ##INSTANCE## (##DSIDESCRIPTION##). Expiry is not being measured until it recovers.\nResource: ##HOST##   Level: ##LEVEL##"
+      }
+    },
+    {
+      "name": "daysUntilExpiry",
+      "description": "Whole days until the leaf certificate's notAfter; negative once expired.",
+      "type": "gauge",
+      "postProcessor": "keyValue",
+      "key": "daysUntilExpiry",
+      "threshold": { "op": "<", "warning": 30, "error": 14, "critical": 7 }
+    },
+    {
+      "name": "daysSinceIssued",
+      "description": "Whole days since the leaf certificate's notBefore.",
+      "type": "gauge",
+      "postProcessor": "keyValue",
+      "key": "daysSinceIssued"
+    },
+    {
+      "name": "chainLength",
+      "description": "Number of certificates the server presented.",
+      "type": "gauge",
+      "postProcessor": "keyValue",
+      "key": "chainLength"
+    },
+    {
+      "name": "chainTrusted",
+      "description": "1 if a fully validating handshake (default trust store, hostname check) succeeds, else 0.",
+      "type": "gauge",
+      "postProcessor": "keyValue",
+      "key": "chainTrusted",
+      "threshold": { "op": "!=", "error": 1 },
+      "alertMessage": {
+        "subject": "TLS cert on ##INSTANCE## is not trusted (##HOST##)",
+        "body": "A validating handshake with ##INSTANCE## failed: the chain, expiry or hostname does not check out against the collector's trust store.\nResource: ##HOST##   Level: ##LEVEL##"
+      }
+    }
+  ]
+}

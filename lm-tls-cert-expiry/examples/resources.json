@@ -1,0 +1,16 @@
+{
+  "resources": [
+    {
+      "displayName": "collector01",
+      "hostname": "collector01.lab.local",
+      "properties": {
+        "tls.endpoints": "www.logicmonitor.com:443, expired.badssl.com, self-signed.badssl.com:443, wrong.host.badssl.com, 127.0.0.1:9999, www.logicmonitor.com"
+      }
+    },
+    {
+      "displayName": "db01",
+      "hostname": "db01.lab.local",
+      "properties": {}
+    }
+  ]
+}

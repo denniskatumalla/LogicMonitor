@@ -11,7 +11,7 @@ module discovers and monitors them with no manual assignment.
 Module:          TLS_Certificate_Expiry-
 Applies to:      resources with property tls.endpoints set
 Input property:  tls.endpoints = host[:port],host[:port],...   (port defaults to 443)
-Instances:       one per endpoint, wildvalue = host:port
+Instances:       one per endpoint, wildvalue = host_port, name = host:port
 Datapoints:      handshakeOk (gauge), daysUntilExpiry (gauge),
                  daysSinceIssued (gauge), chainLength (gauge),
                  chainTrusted (gauge)
@@ -49,6 +49,9 @@ tls.endpoints = www.example.com:443,ldap.corp.local:636,mail.example.com:465
 - Port defaults to `443`.
 - Duplicates are collapsed (`a.com` and `a.com:443` are one instance).
 - An empty value produces no instances and no error.
+- Entries that aren't a valid `host[:port]` (IPv6 literals, spaces, bad
+  ports) are skipped and named on discovery's stderr, rather than becoming
+  instances that can never collect.
 - Hostnames are sent as SNI, so shared-IP and CDN-fronted endpoints return the
   right certificate. Use the name clients use, not an IP, wherever possible.
 
@@ -73,9 +76,16 @@ per endpoint:
 
 | Field | Value |
 |---|---|
-| wildvalue / name | `host:port` |
+| wildvalue (instance ID) | `host_port` |
+| wildalias (name shown) | `host:port` |
 | description | `TLS endpoint <host> on port <port>` |
 | auto properties | `auto.tls.host`, `auto.tls.port` |
+
+The ID can't be `host:port`: LogicMonitor documents `=`, `:`, `\`, `#` and
+space as invalid in a wildvalue and returns NoData for such instances. The
+display name has no such restriction, so it keeps the form people recognise.
+Collection reads `auto.tls.host` and `auto.tls.port` through `instanceProps`
+instead of parsing the ID back apart.
 
 ## Datapoints
 
@@ -113,8 +123,9 @@ are reported independently.
 
 ### Why failures exit 0
 
-If the script exits non-zero, LogicMonitor records no data. Datapoints go to
-`NaN`, and `NaN` doesn't trigger thresholds. So a dead endpoint would show up
+If the script exits non-zero, the collection counts as failed and its output
+datapoints record no data. They go to `NaN`, and `NaN` doesn't trigger
+thresholds. So a dead endpoint would show up
 as missing data rather than an alert. Instead, the script always exits 0 and
 reports a failure as `handshakeOk=0`, which is alertable. Exception details go
 to stderr for the collector logs.
@@ -126,6 +137,10 @@ critical expiry threshold. One outage would then raise two critical alerts,
 and the second would wrongly say the certificate expires in -1 days. With this
 approach, each failure raises exactly one alert, and it names the actual
 problem. On graphs, an outage shows up as a gap in the expiry line.
+
+LogicMonitor can also turn a script's exit code into a datapoint. That would
+work too, but `handshakeOk` keeps the whole contract in stdout, where the Raw
+Data tab and the simulator both show it.
 
 ## Collector requirements
 
@@ -159,22 +174,28 @@ Cost: two TLS handshakes per endpoint per hour.
 - **Hourly polling.** A certificate that is swapped out is noticed within one
   collection interval, not immediately.
 - **IPv4/IPv6.** Whichever address the JVM resolves first is the one checked.
+  IPv6 literals can't be listed in `tls.endpoints`; use a hostname.
 
 ## Repository layout
 
 ```
-scripts/active_discovery.groovy   Active Discovery script
-scripts/collection.groovy         Collection script
-README.md                         This file
+module/TLS_Certificate_Expiry.json   The DataSource definition: AppliesTo,
+                                     intervals, datapoints, thresholds, messages
+scripts/active_discovery.groovy      Active Discovery script
+scripts/collection.groovy            Collection script
+sim/                                 Collector simulator (lmsim)
+tests/                               JUnit tests, offline
+examples/resources.json              Sample resources for ./lmsim
+lmsim, run-tests.sh                  Entry points
 ```
 
 <!-- TODO after portal build: add the exported module JSON to the layout above. -->
 
 ## Running the scripts locally
 
-Both scripts contain the LogicMonitor tokens (`##WILDVALUE##`,
-`##TLS.ENDPOINTS##`). When a token arrives unreplaced, the script falls back
-to a command-line argument, so the file you run locally is the same file that
+On the collector, the scripts read their input from `hostProps` and
+`instanceProps`. Run directly, those aren't bound, and each script falls back
+to a command-line argument. So the file you run locally is the same file that
 goes into the module.
 
 ```bash
@@ -186,14 +207,74 @@ Useful test endpoints: `expired.badssl.com`, `self-signed.badssl.com`,
 `untrusted-root.badssl.com`, `wrong.host.badssl.com`, and a closed local
 port such as `127.0.0.1:9999`.
 
-## Importing
+## Collector simulator
 
-<!-- TODO after portal build: confirm the exact menu path in the portal
-     version used, and the exported file name. -->
+This module was built without access to a LogicMonitor portal. To test it as
+a module, not just as two scripts, `sim/` reproduces the parts of the
+collector's execution model that the module depends on:
 
-1. In the portal, open **Modules → My Module Toolbox** and import the exported
-   JSON file from this repository.
-2. If a module with the same name exists, the importer shows a side-by-side
-   comparison. Review it before overwriting.
-3. Set `tls.endpoints` on a resource, then run Active Discovery on that
-   resource or wait for the hourly schedule.
+| Stage | What lmsim does |
+|---|---|
+| AppliesTo | Evaluates the expression against each resource's properties: `\|\|`, `&&`, `!`, `()`, `==`, `!=`, `=~`, `!~`, `exists()`, `hasCategory()`. Names and `=~` are case-insensitive. |
+| Script execution | Replaces `##TOKEN##`s, binds `hostProps` and `instanceProps` (and not `args`), captures stdout and stderr, uses the return value as the exit code, and abandons the script after the timeout (60 s). |
+| Active Discovery | Parses `id##name##description####auto.k=v&...`. Rejects malformed lines and duplicate IDs. Marks wildvalues with `= : \ #` or space as NoData. Exit ≠ 0 keeps the previous instances; exit 0 with no output removes them. |
+| Collection | Runs once per instance and reads `key=value` lines into datapoints. A missing or non-numeric key is `NaN`. A failed or timed-out script is no data. |
+| Alerting | Applies each datapoint's static threshold, highest severity first. `NaN` never alerts. Fills alert-message tokens and flags any it doesn't recognise. |
+
+```bash
+./lmsim                            # module + examples/resources.json, live endpoints
+./lmsim --resource collector01 --json
+./run-tests.sh                     # 20 tests, offline, about 5 s
+```
+
+`./lmsim` exits 1 if discovery reports errors or an alert message uses an
+unknown token, so it can gate a commit or a CI job.
+
+The tests start local TLS servers with `keytool`-generated certificates, one
+valid and one that expired about a year ago, so they need no network. They
+cover:
+- the full cycle, including one alert per outage;
+- AppliesTo on missing and empty properties;
+- invalid endpoints;
+- failed and timed-out collection;
+- discovery's keep-or-remove behaviour.
+
+One test runs the module's original `host:port` IDs through the simulator and
+shows every instance collecting NoData. That's the bug the simulator caught.
+
+**Where it follows the documentation, and where it assumes.** The documented
+parts are:
+- the discovery output format and wildvalue restrictions;
+- `hostProps` and `instanceProps`;
+- case-insensitive AppliesTo;
+- the 1-minute script limit;
+- discovery's exit-code behaviour;
+- `op warning error critical` thresholds.
+
+Assumptions, each noted in the code:
+- a missing property reads as `""`;
+- `=~` matches anywhere in the value;
+- unknown `##TOKENS##` are left as written;
+- a failed collection script means no data for its datapoints.
+
+Not simulated: complex datapoints, alert trigger and clear intervals, alert
+rules and escalation chains, and the collector's helper classes (SNMP, HTTP,
+and so on).
+
+## Building it in a portal
+
+`module/TLS_Certificate_Expiry.json` is this repository's own description of
+the DataSource, not LogicMonitor's export format. Enter each field into
+**Modules → Add → DataSource** (multi-instance, Embedded Groovy for both
+discovery and collection). Paste the two scripts unchanged. Add each
+datapoint as a Key-Value Pairs datapoint with the key and thresholds given.
+
+Then:
+1. Set `tls.endpoints` on a resource.
+2. Run Active Discovery. You should see one instance per endpoint, named
+   `host:port`.
+3. Compare an instance's Raw Data tab with `./lmsim` output for the same
+   endpoint.
+
+<!-- TODO after portal build: export the module to JSON, commit it, and
+     document the import path here. -->
