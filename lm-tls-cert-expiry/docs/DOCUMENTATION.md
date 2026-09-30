@@ -30,8 +30,8 @@ guide covers *how* the pieces fit and *what to type*.
 
 | Tool | Why | Verified with |
 |---|---|---|
-| JDK (with `keytool`) | Runs Groovy; tests generate certificates with `keytool` | OpenJDK 25 |
-| Groovy (`groovy`, `groovyc` on `PATH`) | Scripts, simulator and tests | Groovy 6.0 |
+| JDK (with `keytool`) | Runs Groovy; tests generate certificates with `keytool` | OpenJDK 25; JDK 8 |
+| Groovy (`groovy`, `groovyc` on `PATH`) | Scripts, simulator and tests | Groovy 6.0 (on JDK 25); Groovy 2.4.21 (on JDK 8) |
 | Network access | Only for `./lmsim` against the sample live endpoints; tests are offline | — |
 | `jq` (optional) | Slicing `./lmsim --json` output | — |
 
@@ -270,7 +270,7 @@ sequenceDiagram
     participant E as Endpoint (host:port)
     participant T as JRE trust store
 
-    Note over C,E: Handshake 1: trust-all, SNI = host, 10 s timeouts
+    Note over C,E: Handshake 1: trust-all, SNI = host, 5 s timeouts
     C->>E: TCP connect + ClientHello (SNI)
     E-->>C: Certificate chain
     C->>C: leaf = chain[0]<br/>daysUntilExpiry = (notAfter - now) / 1 day<br/>daysSinceIssued = (now - notBefore) / 1 day<br/>chainLength = chain.size()
@@ -552,7 +552,11 @@ re-check after an upgrade. Until the CA is trusted, those endpoints raise
 
 Cost: two TLS handshakes per endpoint per hour. A reachable endpoint takes
 about 0.5 s per run. An unreachable one fails the first handshake within the
-10 s connect timeout, and the second handshake is skipped.
+5 s connect timeout, and the second handshake is skipped. The worst case is an
+endpoint that accepts TCP and then stalls. Both handshakes then use their full
+5 s connect and 5 s read timeouts, which is about 20 s plus DNS, against the
+60 s script limit. To change the timeouts, edit `timeoutMs` in
+`scripts/collection.groovy`.
 
 ---
 
@@ -586,7 +590,9 @@ Instances:       wildvalue = host_port, wildalias = host:port,
                  auto.tls.host, auto.tls.port
 Datapoints:      handshakeOk, daysUntilExpiry, daysSinceIssued, chainLength, chainTrusted (all gauges)
 Intervals:       collection 3600 s, discovery 3600 s, script timeout 60 s
-Collector reqs:  any OS, JDK TLS classes only, direct outbound TCP to each endpoint
+Collector reqs:  any OS, Groovy 2.4+ (Groovy 2 or 4 collectors), JDK TLS classes only,
+                 direct outbound TCP to each endpoint
+Timeouts:        5 s connect + 5 s read per handshake; worst case ~20 s of the 60 s limit
 ```
 
 ### 9.2 Datapoints

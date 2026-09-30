@@ -148,12 +148,18 @@ Data tab and the simulator both show it.
 ## Collector requirements
 
 - Any collector OS. The scripts use only the JDK's standard TLS classes.
+- Any collector Groovy runtime. The scripts avoid Groovy 3+ syntax such as
+  `!in`. The test suite passes on Groovy 2.4 (JDK 8) and Groovy 6 (JDK 25),
+  so they run on both Groovy 2 and Groovy 4 collectors.
 - DNS resolution and outbound TCP from the collector to **every endpoint on its
   port**. Proxies are not used; the socket connects directly.
 - `chainTrusted` validates against the **collector's JRE trust store**.
   Endpoints signed by a private CA report `0` until that CA is imported there.
 
-Cost: two TLS handshakes per endpoint per hour.
+Cost: two TLS handshakes per endpoint per hour. Each handshake has a 5 s
+connect timeout and a 5 s read timeout. The worst case is 20 s plus DNS,
+comfortably inside the collector's 60 s script limit. An unreachable endpoint
+fails the first handshake, so the second is skipped.
 
 ## Known limitations
 

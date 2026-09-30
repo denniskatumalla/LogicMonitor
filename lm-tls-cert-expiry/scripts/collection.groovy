@@ -39,13 +39,17 @@ def trustAll = [ new X509TrustManager() {
     X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0] }
 } ] as TrustManager[]
 
+// Per-handshake connect and read timeouts. Worst case is two handshakes x
+// (5 s + 5 s) = 20 s plus DNS, well inside the collector's 60 s script limit.
+int timeoutMs = 5000
+
 // Connects and completes a handshake; caller closes the returned socket.
 // verifyHost adds the same hostname check a browser does.
 def handshake = { SSLSocketFactory factory, boolean verifyHost ->
     SSLSocket s = factory.createSocket() as SSLSocket
     try {
-        s.connect(new InetSocketAddress(host, port), 10000)
-        s.soTimeout = 10000
+        s.connect(new InetSocketAddress(host, port), timeoutMs)
+        s.soTimeout = timeoutMs
 
         // Send SNI, or a multi-tenant endpoint hands back the wrong certificate.
         SSLParameters params = s.getSSLParameters()
