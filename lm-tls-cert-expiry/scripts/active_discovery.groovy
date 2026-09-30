@@ -35,7 +35,8 @@ raw.split(",").each { entry ->
     // Skip what can't be a host[:port] (IPv6 literals, typos) rather than
     // emitting an instance that can never collect. Count colons in the raw
     // entry: tokenize() drops empty pieces, so "::1" would pass as host "1".
-    if (e.count(":") > 1 ||!(h ==~ /[A-Za-z0-9._-]+/) || !(p ==~ /\d{1,5}/) || (p as Integer) !in 1..65535) {
+    // !(x in r) rather than x !in r, which needs Groovy 3+.
+    if (e.count(":") > 1 || !(h ==~ /[A-Za-z0-9._-]+/) || !(p ==~ /\d{1,5}/) || !((p as Integer) in 1..65535)) {
         System.err.println("Skipping invalid endpoint '${e}': expected host[:port]")
         return
     }
