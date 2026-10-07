@@ -18,7 +18,7 @@ services:
       # This stamps host.name on every span and log record, so LM maps them to the
       # VM's existing resource (host.name -> system.hostname) and does not create
       # a duplicate resource. setup.sh sets LM_HOST_NAME to `hostname -f`.
-      - OTEL_RESOURCE_ATTRIBUTES=host.name=${LM_HOST_NAME},deployment.environment.name=${LM_DEPLOYMENT_ENV:-cta-demo}
+      - OTEL_RESOURCE_ATTRIBUTES=host.name=${LM_HOST_NAME},deployment.environment.name=${LM_DEPLOYMENT_ENV:-demo}
       # Give the collector room for two extra pipelines and the LM exporter queue
       # (upstream: 400M limit, GOMEMLIMIT=160MiB).
       - GOMEMLIMIT=400MiB

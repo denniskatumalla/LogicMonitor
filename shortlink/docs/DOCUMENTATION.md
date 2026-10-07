@@ -329,7 +329,7 @@ The case for c7i-flex.large:
   for the public IPv4 address ($0.005/h), plus about $0.56 for 30 GB of gp3.
   That is roughly **$16 of the $100–$200 in credits**.
 
-Choose **x86_64** Amazon Linux 2023. c7i-flex is Intel. Pick
+Choose **x86_64** Amazon Linux 2023. c7i-flex is x86_64. Pick
 **m7i-flex.large** instead if you also run the OpenTelemetry collector on the
 box, or want a Medium collector.
 
@@ -661,8 +661,8 @@ and `errorRatePct`. A single slow minute shouldn't page anyone. For the demo,
 
 ### 6.3 Rules and escalation chain
 
-- **Escalation chain** `Shortlink on-call`: stage 1 is email to you (add Slack
-  or Teams if an integration exists). Escalation interval: 15 minutes, so an
+- **Escalation chain** `Shortlink on-call`: stage 1 is email to you (add a chat
+  integration if one exists). Escalation interval: 15 minutes, so an
   unacknowledged alert is re-sent.
 - **Alert rule** `Shortlink critical/error`: priority 10. Resource group
   `Shortlink Demo`, or a property match on the instance. Severity

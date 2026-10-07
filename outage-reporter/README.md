@@ -64,7 +64,7 @@ reported and have no ETR yet, which is the business number a storm puts at
 risk.
 
 Six fictional service areas cover 3,000,000 customers in ZIP codes
-00010–00069. The USPS assigns no ZIP below 00501, so none of these is a real
+00010–00069. No real ZIP code is that low, so none of these is a real
 place. ZIP **00099** is reserved for synthetic monitoring. Those reports are
 stored like any other, so a check exercises the whole write path. They are
 then closed at once and left out of every business figure.

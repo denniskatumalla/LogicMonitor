@@ -111,7 +111,7 @@ counter and derive types would be wrong here.
   finished, so escalate.
 - **7 days (critical):** emergency renewal territory.
 
-For ACME-managed certificates (Let's Encrypt and similar), clients usually
+For ACME-managed certificates, clients usually
 renew at around 30 days remaining, so a cert may briefly show 29 before renewal
 runs. If that warning is noise in your estate, lower the warning to about 20
 days. An ACME cert still below 20 days means automation has failed.

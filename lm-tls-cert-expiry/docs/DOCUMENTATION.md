@@ -532,7 +532,7 @@ re-check after an upgrade. Until the CA is trusted, those endpoints raise
 
 ### 7.4 Tuning thresholds
 
-- **ACME / Let's Encrypt estates:** clients renew at about 30 days left, so
+- **ACME-managed estates:** clients renew at about 30 days left, so
   the 30-day warning can fire briefly. Lower the warning to about **20**. A
   cert still under 20 days means automation has failed.
 - **Manually renewed certs with slow procurement:** consider raising the

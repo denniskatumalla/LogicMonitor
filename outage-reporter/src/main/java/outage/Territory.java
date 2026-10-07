@@ -5,7 +5,7 @@ import java.util.Optional;
 
 /**
  * The fictional service territory of Example Power &amp; Light. ZIP codes are
- * in the 000xx range, which the USPS does not assign, so none of them is a
+ * in the 000xx range, below the lowest real ZIP code, so none of them is a
  * real place.
  */
 final class Territory {

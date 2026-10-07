@@ -897,7 +897,7 @@ the same as for Shortlink:
   - `chaos storm` / `chaos` / `chaos off`, and loadgen filing reports.
 - **Both unit files pass `systemd-analyze verify`.** The only warning is
   that the loadgen path doesn't exist on the build machine.
-- **The pages were rendered in headless Firefox:**
+- **The pages were rendered in a headless browser:**
   - report, status (ticket and ZIP), service areas, and areas at phone
     width;
   - the storm banner;
@@ -915,8 +915,8 @@ the same as for Shortlink:
   - LM web checks: multiple steps, GET/HEAD/POST per step, form-encoded POST
     data, expected status codes and text match, Follow redirect on by
     default, and the same options on internal checks;
-  - NANPA's reserved 555-0100–0199 numbers;
-  - the USPS lowest ZIP, 00501.
+  - the 555-0100–0199 phone numbers reserved for fictional use;
+  - the lowest real ZIP code, 00501.
 
 URLs and quotes are in [§11 Sources](#11-sources).
 
@@ -935,8 +935,8 @@ URLs and quotes are in [§11 Sources](#11-sources).
 - the LogSource mapping method that works first time, and the checkpoint IP
   list;
 - whether the OTel Java agent instruments `com.sun.net.httpserver`;
-- that the USPS will never assign 00010–00099. It says the lowest ZIP is
-  00501, not that lower numbers are reserved.
+- that 00010–00099 will never be assigned. The published fact is that the
+  lowest ZIP is 00501, not that lower numbers are reserved.
 
 ---
 
@@ -981,9 +981,3 @@ collector, DAM, HostStatus, alert rules and OTLP.
   Quote: "Effective Transition = Polling Interval × Failed Check".
 - **Selenium synthetics (not used; needs a Selenium Grid 4 and Collector
   34.100+):** <https://www.logicmonitor.com/support/selenium-monitoring-setup>
-- **Fictional phone numbers:**
-  <https://nanpa.com/numbering/555-line-numbers>. Quote: "The fictitious,
-  non-working numbers, 555-0100 through 555-0199, will remain reserved for
-  entertainment/advertising".
-- **Lowest ZIP:** <https://facts.usps.com/source/address-management/>.
-  Quote: "The lowest ZIP Code number is 00501".
