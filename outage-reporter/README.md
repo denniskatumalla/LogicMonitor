@@ -22,6 +22,10 @@ one datapoint and one alert:
 - **[docs/DOCUMENTATION.md](docs/DOCUMENTATION.md)**: architecture, the web UI
   and API, deployment, how each LogicMonitor layer is set up, operations and
   troubleshooting.
+- **Code design** ([§2.3–2.5](docs/DOCUMENTATION.md#23-application-architecture)):
+  the application architecture diagram, the object model with what each
+  class does, the ticket lifecycle, and sequence diagrams of the method calls
+  for startup, a customer report, a health poll, the dispatcher and a storm.
 
 ## Contract
 

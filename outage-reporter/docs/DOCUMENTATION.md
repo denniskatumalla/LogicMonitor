@@ -153,32 +153,88 @@ Key points:
 | **Events** | Access logs, reports received, ticket transitions, storm surges, health transitions, chaos, sshd/auth | LM Logs via syslog LogSource | Local collector (UDP 514) |
 | **Traces** (optional) | Per-request spans | LM APM via the OpenTelemetry Java agent | Direct OTLP to the portal |
 
-### 2.3 Code architecture
+### 2.3 Application architecture
+
+One JVM process, `outage.Main`, with no framework and no third-party
+libraries. It has four entry points, a domain core, an append-only file for
+storage, and two background jobs.
 
 ```mermaid
-flowchart TB
-    MAIN["Main<br/>env → Config, shutdown hook"] --> SRV
-    SRV["OutageServer<br/>HttpServer + HttpsServer + admin HttpServer<br/>virtual-thread executor, routing, pages"]
-    SRV --> SVC["OutageService<br/>report · lookup · ZIP and area views · KPIs"]
-    SVC --> STORE["TicketStore<br/>ConcurrentHashMap + append-only tickets.log"]
-    SVC --> TER["Territory<br/>6 fictional areas, ZIP 00010–00069"]
-    SRV --> DISP["Dispatcher (1 s tick)<br/>triage · crews · ETRs · restorations"]
-    SRV --> STORM["StormSurge (200 ms tick)<br/>chaos storm: in-process report surge"]
-    DISP --> SVC
-    STORM --> SVC
-    SRV --> PAGES["Pages<br/>HTML templates + css/js/svg from the jar"]
-    SRV --> MET["Metrics<br/>LongAdders + 60 s ring for p95 / error %"]
-    SRV --> CH["Chaos<br/>off | latency | errors | store | storm"]
-    SRV --> HEALTH["Health<br/>snapshot + classify()"]
-    SRV --> MB["Stats (StatsMBean)<br/>outagereporter:type=Stats"]
-    MB -. "reads" .-> HEALTH
-    CH -. "blocks writes" .-> STORE
-    SRV --> LOG["Log<br/>key=value → stdout"]
+flowchart LR
+    subgraph CLIENTS["Callers"]
+        B["Customer browser"]
+        WC["LM Uptime web checks"]
+        LGEN["Load generator (curl)"]
+        COLS["LM Collector:<br/>Groovy script DataSource"]
+        COLJ["LM Collector:<br/>JMX DataSources"]
+        OPS["Operator: sudo chaos …"]
+    end
+
+    subgraph JVM["outage.Main (one JVM)"]
+        direction TB
+        subgraph EDGE["Entry points"]
+            P8080[":8080 HttpServer<br/>pages · forms · /api · /health"]
+            P8443[":8443 HttpsServer<br/>same routes over TLS"]
+            P8081[":8081 admin HttpServer<br/>loopback + token: /admin/chaos"]
+            MBS["Platform MBeanServer<br/>JMX :9010"]
+        end
+        SRV["OutageServer<br/>routing · fault injection · HTML and JSON responses"]
+        subgraph DOMAIN["Domain"]
+            SVC["OutageService<br/>reports · lookups · area views · KPIs"]
+            TER["Territory<br/>6 areas, ZIP to area"]
+            DISP["Dispatcher<br/>ticket lifecycle"]
+            STORM["StormSurge<br/>simulated storm intake"]
+        end
+        subgraph OBS["Observability"]
+            MET["Metrics<br/>counters + 60 s latency window"]
+            HEALTH["Health<br/>snapshot + UP/DEGRADED/DOWN"]
+            STATS["Stats MBean"]
+            CHAOS["Chaos<br/>fault switch"]
+        end
+        STORE["TicketStore<br/>in-memory maps"]
+        PAGES["Pages<br/>templates + static assets"]
+        LOG["Log<br/>key=value lines"]
+        SCHED["Scheduler thread<br/>1 s and 200 ms ticks"]
+    end
+
+    FILE[("/var/lib/outage-reporter/<br/>tickets.log")]
+    JOURNAL["stdout → journald → rsyslog → LM Logs"]
+
+    B & WC & LGEN --> P8080
+    B --> P8443
+    COLS -- "GET /health" --> P8080
+    COLJ --> MBS
+    OPS --> P8081
+    P8080 & P8443 & P8081 --> SRV
+    MBS --> STATS --> HEALTH
+    SRV --> PAGES
+    SRV --> SVC
+    SRV --> MET
+    SRV --> CHAOS
+    SRV --> HEALTH
+    SVC --> TER
+    SVC --> STORE
+    SCHED --> DISP --> SVC
+    SCHED --> STORM --> SVC
+    STORM -.-> CHAOS
+    STORE -.-> CHAOS
+    STORE --> FILE
+    SRV & DISP & STORM --> LOG --> JOURNAL
 ```
 
-`/health` and the MBean read the same `Health` snapshot. So the script
-DataSource, the JMX DataSource and a person running `curl` all see the same
-numbers.
+**Threads.**
+
+| Thread | Runs | Notes |
+|---|---|---|
+| `main` | `Main.main`: builds the server, then waits on a latch | A shutdown hook calls `OutageServer.close()` on SIGTERM |
+| One virtual thread per request | Every HTTP and HTTPS request, and admin calls | `Executors.newVirtualThreadPerTaskExecutor()`. A slow request (latency fault) costs nothing but its own virtual thread |
+| `dispatcher` (one platform thread) | `Dispatcher.tick` every 1 s and `StormSurge.tick` every 200 ms | A single-thread scheduler, so the dispatcher is the only writer of existing tickets |
+| JMX/RMI threads | `Stats` getters | Each getter takes a fresh `Health` snapshot |
+
+**Data flow in one sentence.** Requests become `Report`s, the service turns
+them into `Ticket`s in the `TicketStore`, the `Dispatcher` moves those
+tickets through their lifecycle, and `/health` and JMX read a `Health`
+snapshot built from `Metrics`, the store and the service's KPIs.
 
 **Concurrency.** Tickets are immutable records, so a reader always sees a
 whole ticket.
@@ -191,6 +247,403 @@ whole ticket.
   of every existing ticket.
 - **Aggregates** iterate a live concurrent view of open tickets and never
   block writers.
+
+### 2.4 Object model
+
+Every class is in package `outage`, under
+[`src/main/java/outage/`](../src/main/java/outage/). Records are immutable
+values; the rest are long-lived objects that `OutageServer` creates once at
+startup.
+
+```mermaid
+classDiagram
+    direction LR
+
+    class Main {
+        +main(args)$
+    }
+    class Config {
+        <<record>>
+        port, adminPort, adminToken, tlsPort
+        dataDir, triagePerMinute, restoreMinutes
+        stormReportsPerSecond, demoCredit …
+        +fromEnv(env)$ Config
+    }
+    class OutageServer {
+        -HttpServer http, admin
+        -HttpsServer https
+        -ExecutorService executor
+        -ScheduledExecutorService background
+        +start(config)$ OutageServer
+        ~health() Health
+        -handlePublic(exchange)
+        -route(exchange, path) int
+        -submitForm(exchange) int
+        -submitJson(exchange) int
+        -accept(report, channel) Optional~Ticket~
+        -serveHealth(exchange)
+        -handleAdmin(exchange)
+        +close()
+    }
+    class OutageService {
+        -LongAdder reportsTotal
+        +report(report, source) Ticket
+        +reportFailed()
+        +ticket(id) Optional~Ticket~
+        +stormMode() boolean
+        +kpis() Kpis
+        +ticketJson(ticket) Map
+        +zipJson(zip) Map
+        +areasJson() Map
+    }
+    class Kpis {
+        <<record>>
+        reportsLastMinute, failedReportsLastMinute
+        openOutages, customersAffected
+        awaitingTriage, oldestOpenMinutes
+        overdueOutages, stormMode
+    }
+    class TicketStore {
+        -ConcurrentHashMap all, open
+        -BufferedWriter writer
+        +open(dataDir, writesBlocked)$ TicketStore
+        +create(source, report, areaId, now) Ticket
+        +update(ticket)
+        +get(id) Optional~Ticket~
+        +open() Collection~Ticket~
+        +healthy() boolean
+    }
+    class Ticket {
+        <<record>>
+        id, source, zip, areaId, status
+        reportedAt, confirmedAt, crewAssignedAt
+        restoredAt, etrAt, etrRevisions
+        customersAffected
+        +reported(...)$ Ticket
+        +advance(status, at, etr, customers, revisions) Ticket
+        +open() boolean
+        +counts() boolean
+    }
+    class Report {
+        <<record>>
+        zip, address, phone, notes
+        +from(fields)$ Report
+    }
+    class Territory {
+        <<utility>>
+        AREAS: List~Area~
+        +forZip(zip)$ Optional~Area~
+        +byId(id)$ Optional~Area~
+    }
+    class Area {
+        <<record>>
+        id, name, zipFrom, zipTo, customersServed
+    }
+    class Dispatcher {
+        -double budget
+        +tick(now)
+        -confirm(ticket, now, storm)
+        -assignCrew(ticket, now)
+        -move(ticket)
+    }
+    class StormSurge {
+        -double owed
+        +tick(now)
+        -randomReport() Report
+    }
+    class Metrics {
+        -LongAdder requests, serverErrors, clientErrors
+        +record(status, latencyMs)
+        +window() Window
+    }
+    class EventWindow {
+        +add(n)
+        +sum() long
+    }
+    class Health {
+        <<record>>
+        status, uptimeSeconds, p95LatencyMs
+        errorRatePct, storeOk, chaosMode, kpis
+        +classify(storeOk, window, config)$ Status
+        +httpStatus() int
+        +toJson() Map
+    }
+    class Chaos {
+        -volatile Mode mode
+        +mode() Mode
+        +set(mode)
+        +is(mode) boolean
+    }
+    class Stats {
+        +getStatus() String
+        +getAwaitingTriage() int
+        +getP95LatencyMs() double
+        … one getter per datapoint
+    }
+    class StatsMBean {
+        <<interface>>
+    }
+    class Pages {
+        +load(demoCredit)$ Pages
+        +render(template, values) String
+        +asset(name) Optional~Asset~
+        +esc(text)$ String
+    }
+    class Log {
+        <<utility>>
+        +info(event, kv…)$
+        +warn(event, kv…)$
+        +error(event, kv…)$
+    }
+    class Json {
+        <<utility>>
+        +parse(text)$ Object
+        +write(value)$ String
+    }
+
+    Main ..> Config : fromEnv
+    Main --> OutageServer : start / close
+    OutageServer *-- OutageService
+    OutageServer *-- TicketStore
+    OutageServer *-- Dispatcher
+    OutageServer *-- StormSurge
+    OutageServer *-- Metrics
+    OutageServer *-- Chaos
+    OutageServer *-- Pages
+    OutageServer ..> Health : builds
+    OutageServer ..> Stats : registers
+    Stats ..|> StatsMBean
+    Stats ..> Health : reads via OutageServer.health()
+    OutageService --> TicketStore
+    OutageService *-- EventWindow : reports, failedReports
+    OutageService ..> Territory
+    OutageService ..> Kpis : builds
+    Dispatcher --> OutageService
+    StormSurge --> OutageService
+    StormSurge --> Chaos
+    TicketStore o-- Ticket
+    TicketStore ..> Chaos : writesBlocked
+    Ticket ..> Report : created from
+    Territory *-- Area
+    Health *-- Kpis
+```
+
+| Object | Kind | What it is | What it does |
+|---|---|---|---|
+| [`Main`](../src/main/java/outage/Main.java) | Entry point | The process | Reads `Config` from the environment, starts `OutageServer`, waits for SIGTERM and closes it cleanly |
+| [`Config`](../src/main/java/outage/Config.java) | Record | Every setting | Parses `OUTAGE_*` environment variables, with defaults |
+| [`OutageServer`](../src/main/java/outage/OutageServer.java) | Long-lived, owns everything | The application shell | Opens the three listeners, routes each request, applies the active fault, renders pages and JSON, records metrics, builds the `Health` snapshot, registers the MBean, runs the two background jobs, and shuts it all down |
+| [`OutageService`](../src/main/java/outage/OutageService.java) | Long-lived | The business logic | Accepts a `Report` and creates a ticket; looks up tickets; builds the ticket, ZIP and area views; computes the business KPIs; declares storm response from report volume |
+| `OutageService.Kpis` | Record | Business figures at one instant | Reports in the last minute, failed reports, open outages, customers affected, awaiting triage, oldest open outage, overdue outages, storm mode |
+| [`TicketStore`](../src/main/java/outage/TicketStore.java) | Long-lived | Persistence | Keeps every ticket and the open ones in concurrent maps; appends each change to `tickets.log` before updating memory; replays the log on startup; reports whether it can still take writes |
+| [`Ticket`](../src/main/java/outage/Ticket.java) | Immutable record | One outage report | Holds the report and its lifecycle timestamps, ETR and impact. `advance()` returns the next version; nothing is changed in place |
+| [`Report`](../src/main/java/outage/Report.java) | Immutable record | Validated customer input | `Report.from()` checks and normalises ZIP, address, phone and notes, or throws `Report.Invalid` naming the field |
+| [`Territory`](../src/main/java/outage/Territory.java) / `Area` | Static data | The service territory | Six fictional areas, named after LogicMonitor capabilities, plus the synthetic-check ZIP 00099. Maps a ZIP or an id to an area |
+| [`Dispatcher`](../src/main/java/outage/Dispatcher.java) | Background job (1 s) | The outage management system | Confirms reports oldest first within a triage budget, assigns crews, slips some ETRs, restores outages. The only writer of existing tickets |
+| [`StormSurge`](../src/main/java/outage/StormSurge.java) | Background job (200 ms) | The storm simulator | While the fault is `storm`, generates reports in-process, ramping to a set rate and weighted towards the coastal areas |
+| [`Metrics`](../src/main/java/outage/Metrics.java) | Long-lived | Technical golden signals | Counts requests and errors and keeps a 60 s ring of latencies for p95 and error rate |
+| [`EventWindow`](../src/main/java/outage/EventWindow.java) | Helper | A sliding 60 s counter | Backs "reports in the last minute" and "failed reports in the last minute" |
+| [`Health`](../src/main/java/outage/Health.java) | Immutable record | The monitoring contract | One snapshot of status, golden signals, store health, fault mode and KPIs. `classify()` decides UP, DEGRADED or DOWN; `toJson()` is the `/health` body |
+| [`Stats`](../src/main/java/outage/Stats.java) / [`StatsMBean`](../src/main/java/outage/StatsMBean.java) | JMX MBean | The JMX view of `Health` | `outagereporter:type=Stats`, one getter per datapoint, each reading a fresh snapshot |
+| [`Chaos`](../src/main/java/outage/Chaos.java) | Long-lived | The fault switch | Holds the current mode: off, latency, errors, store or storm |
+| [`Pages`](../src/main/java/outage/Pages.java) | Long-lived | The web UI | Loads HTML templates and static files from the jar at startup, fills placeholders, escapes text, adds the optional credit line |
+| [`Log`](../src/main/java/outage/Log.java) | Static utility | Structured logging | Writes `ts=… level=… event=… key=value` lines to stdout for journald and LM Logs |
+| [`Json`](../src/main/java/outage/Json.java) | Static utility | JSON without a library | Parses request bodies and writes responses |
+
+**Ticket lifecycle**, driven by the `Dispatcher`:
+
+```mermaid
+stateDiagram-v2
+    [*] --> REPORTED: OutageService.report()
+    REPORTED --> CONFIRMED: triage, oldest first, within the per-minute budget<br/>sets customers affected and the first ETR
+    REPORTED --> RESTORED: synthetic check (ZIP 00099), closed at once
+    CONFIRMED --> CREW_ASSIGNED: a quarter of the way to the ETR<br/>1 in 4 ETRs slips by 25–50 %
+    CREW_ASSIGNED --> RESTORED: at the ETR
+    RESTORED --> [*]
+```
+
+### 2.5 Object interactions
+
+The sequence diagrams below follow the method calls between objects for the
+five flows that matter: startup, a customer report, a LogicMonitor health
+poll, the dispatcher's tick and a storm.
+
+#### Startup
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant M as Main
+    participant C as Config
+    participant S as OutageServer
+    participant TS as TicketStore
+    participant SVC as OutageService
+    participant P as Pages
+    participant MBS as MBeanServer
+
+    M->>C: fromEnv(System.getenv())
+    M->>S: start(config)
+    S->>S: new Metrics, new Chaos
+    S->>TS: open(dataDir, chaos is STORE)
+    TS->>TS: load() replays tickets.log
+    S->>SVC: new OutageService(store, config, clock)
+    S->>S: new Dispatcher(service), new StormSurge(service, chaos)
+    S->>P: load(config.demoCredit())
+    S->>S: startListeners(): :8080, :8443 if a keystore is set, :8081 if a token is set
+    S->>MBS: registerMBean(new Stats(this::health))
+    S->>S: startBackground(): Dispatcher.tick every 1 s, StormSurge.tick every 200 ms
+    S-->>M: server
+    M->>M: add shutdown hook, then wait
+```
+
+#### A customer submits a report (`POST /report`)
+
+This is the path the external LM Uptime check uses, with ZIP 00099.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as Customer
+    participant S as OutageServer
+    participant CH as Chaos
+    participant R as Report
+    participant SVC as OutageService
+    participant T as Territory
+    participant TS as TicketStore
+    participant P as Pages
+    participant MET as Metrics
+
+    U->>S: POST /report (form)
+    S->>S: handlePublic(exchange)
+    S->>CH: mode()
+    Note over S,CH: latency: sleep 1.5 s. errors: answer 500 to half of requests
+    S->>S: route() then submitForm()
+    S->>R: from(fields)
+    alt invalid input
+        R-->>S: Report.Invalid(field)
+        S->>P: render("message.html") 400 "Please check your report"
+    else valid
+        S->>SVC: report(report, WEB) via accept()
+        SVC->>T: forZip(zip)
+        SVC->>TS: create(source, report, areaId, now)
+        TS->>TS: append "R" record to tickets.log, then put()
+        alt store fault or write failure
+            TS-->>SVC: IOException
+            SVC-->>S: IOException
+            S->>P: render("message.html") 503 "Report not sent"
+        else stored
+            TS-->>SVC: Ticket (REPORTED)
+            SVC->>SVC: reports.add(1)
+            SVC-->>S: Ticket
+            S->>S: Log.info("report_received")
+            S->>P: render("message.html") 200 "Report received"
+        end
+    end
+    S->>MET: record(status, latencyMs)
+    opt any 5xx on a report submission (store failure or the errors fault)
+        S->>SVC: reportFailed()
+    end
+    S->>S: Log.info("access")
+    S-->>U: HTML page
+```
+
+#### LogicMonitor polls health (script DataSource and JMX)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant COL as LM Collector
+    participant S as OutageServer
+    participant ST as Stats (MBean)
+    participant TS as TicketStore
+    participant MET as Metrics
+    participant H as Health
+    participant SVC as OutageService
+
+    alt Groovy script DataSource
+        COL->>S: GET /health
+        S->>S: serveHealth() then health()
+    else JMX DataSource
+        COL->>ST: getAwaitingTriage() and the other getters
+        ST->>S: health.get() is OutageServer.health()
+    end
+    S->>TS: healthy()
+    S->>MET: window()
+    S->>H: classify(storeOk, window, config)
+    Note over S: on a status change, Log.warn("health_changed")
+    S->>SVC: kpis()
+    SVC->>SVC: tallyByArea() over store.open(), EventWindow sums, stormMode()
+    S->>H: new Health(status, …, kpis)
+    alt script
+        S-->>COL: 200 or 503 with Json.write(health.toJson())
+    else JMX
+        ST-->>COL: one attribute value
+    end
+```
+
+#### The dispatcher's tick (every second)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant SCH as Scheduler thread
+    participant D as Dispatcher
+    participant SVC as OutageService
+    participant TS as TicketStore
+    participant TK as Ticket
+
+    SCH->>D: tick(now)
+    D->>D: top up the triage budget
+    D->>SVC: stormMode()
+    D->>SVC: store().open()
+    loop each open ticket
+        alt CONFIRMED and a quarter of the way to the ETR
+            D->>TK: advance(CREW_ASSIGNED, …), maybe a slipped ETR
+            D->>TS: update(next)
+        else CREW_ASSIGNED and the ETR has passed
+            D->>TK: advance(RESTORED, …)
+            D->>TS: update(next)
+        else REPORTED and old enough
+            D->>D: add to the waiting list
+        end
+    end
+    loop waiting, oldest first, while the budget lasts
+        D->>TK: advance(CONFIRMED, now, etr, customers)
+        D->>TS: update(next)
+        D->>D: Log.info("ticket_status")
+    end
+    Note over D,TS: if a write fails: Log.error("dispatcher_paused") and resume on the next good tick
+```
+
+#### A storm (`sudo chaos storm`)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor OP as Operator
+    participant S as OutageServer
+    participant CH as Chaos
+    participant SCH as Scheduler thread
+    participant SS as StormSurge
+    participant SVC as OutageService
+    participant D as Dispatcher
+
+    OP->>S: POST /admin/chaos?mode=storm (X-Admin-Token)
+    S->>S: handleAdmin(): tokenMatches(), Chaos.Mode.parse()
+    S->>CH: set(STORM)
+    S->>S: Log.warn("chaos_mode_changed")
+    loop every 200 ms
+        SCH->>SS: tick(now)
+        SS->>CH: is(STORM)
+        SS->>SS: ramp the rate to 6 reports a second
+        SS->>SVC: report(randomReport(), STORM), several times
+    end
+    loop every 1 s
+        SCH->>D: tick(now)
+        Note over D: confirms at most 180 a minute (3 a second)
+    end
+    Note over SVC,D: reports arrive faster than triage, so awaitingTriage climbs.<br/>stormMode() turns true at 60 or more reports a minute, which shows the banner.<br/>Health.status stays UP: only the business KPI alerts.
+```
 
 ---
 
