@@ -25,7 +25,8 @@ public record Config(
         int dispatchIntervalMs,
         int stormReportsPerSecond,
         int stormRampSeconds,
-        int stormThresholdPerMinute) {
+        int stormThresholdPerMinute,
+        String demoCredit) {
 
     public static Config fromEnv(Map<String, String> env) {
         String keystore = env.getOrDefault("OUTAGE_TLS_KEYSTORE", "");
@@ -50,7 +51,8 @@ public record Config(
                 intOf(env, "OUTAGE_DISPATCH_INTERVAL_MS", 1000),
                 intOf(env, "OUTAGE_STORM_REPORTS_PER_SECOND", 6),
                 intOf(env, "OUTAGE_STORM_RAMP_SECONDS", 10),
-                intOf(env, "OUTAGE_STORM_THRESHOLD_PER_MINUTE", 60));
+                intOf(env, "OUTAGE_STORM_THRESHOLD_PER_MINUTE", 60),
+                env.getOrDefault("OUTAGE_DEMO_CREDIT", "").strip());
     }
 
     boolean adminEnabled() {

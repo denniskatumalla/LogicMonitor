@@ -66,7 +66,7 @@ class StormSurgeTest {
             chaos.set(Chaos.Mode.STORM);
             storm.tick(d.now.get());
             run(d, storm, 30_000);
-            long coastal = d.store.open().stream().filter(t -> t.areaId().equals("harbor") || t.areaId().equals("delta")).count();
+            long coastal = d.store.open().stream().filter(t -> t.areaId().equals("edwin") || t.areaId().equals("envision")).count();
             int all = d.store.open().size();
             ok("about 75 % coastal: " + coastal + " of " + all, coastal > all * 0.6 && coastal < all * 0.9);
             ok("storm reports count in the business figures",

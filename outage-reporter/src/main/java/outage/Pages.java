@@ -17,7 +17,7 @@ final class Pages {
 
     record Asset(String contentType, byte[] body) { }
 
-    static final List<String> TEMPLATES = List.of("index.html", "status.html", "areas.html", "message.html");
+    static final List<String> TEMPLATES = List.of("index.html", "status.html", "areas.html", "monitoring.html", "message.html");
     static final List<String> ASSETS = List.of("app.css", "app.js", "icon.svg");
     private static final Map<String, String> TYPES = Map.of(
             "html", "text/html; charset=utf-8",
@@ -27,12 +27,18 @@ final class Pages {
 
     private final Map<String, String> templates = new HashMap<>();
     private final Map<String, Asset> assets = new HashMap<>();
+    private final String demoCredit;
 
-    private Pages() { }
+    private Pages(String demoCredit) {
+        this.demoCredit = demoCredit;
+    }
 
-    /** Reads every page up front, so a missing resource fails startup rather than a customer's request. */
-    static Pages load() throws IOException {
-        Pages p = new Pages();
+    /**
+     * Reads every page up front, so a missing resource fails startup rather than a customer's request.
+     * {@code demoCredit} is an optional footer line (who built the demo, and for whom), set per deployment.
+     */
+    static Pages load(String demoCredit) throws IOException {
+        Pages p = new Pages(demoCredit.isBlank() ? "" : "<p class=\"fine demo-credit\">" + esc(demoCredit) + "</p>");
         for (String name : TEMPLATES) p.templates.put(name, new String(read(name), StandardCharsets.UTF_8));
         for (String name : ASSETS) p.assets.put(name, new Asset(TYPES.get(name.substring(name.lastIndexOf('.') + 1)), read(name)));
         return p;
@@ -53,7 +59,7 @@ final class Pages {
     String render(String template, Map<String, String> html) {
         String out = templates.get(template);
         for (Map.Entry<String, String> e : html.entrySet()) out = out.replace("{{" + e.getKey() + "}}", e.getValue());
-        return out;
+        return out.replace("{{demoCredit}}", demoCredit);
     }
 
     static String esc(String s) {

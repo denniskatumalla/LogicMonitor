@@ -36,7 +36,7 @@ class PagesTest {
     @TestRunner.Test
     void everyPageIsServedWithTheFormFieldsAndSafeHeaders() throws Exception {
         try (OutageServer s = start("pages")) {
-            for (String path : List.of("/", "/status", "/areas")) {
+            for (String path : List.of("/", "/status", "/areas", "/monitoring")) {
                 HttpResponse<String> r = get(base(s) + path);
                 eq(path, 200, r.statusCode());
                 eq(path, "text/html; charset=utf-8", r.headers().firstValue("Content-Type").orElse(null));
@@ -44,6 +44,8 @@ class PagesTest {
                 ok(path + " has no unfilled placeholder", !r.body().contains("{{"));
                 ok(path + " hides the storm banner when calm", r.body().contains("id=\"storm-banner\" role=\"status\" hidden"));
                 ok(path + " says the utility is fictional", r.body().contains("Example Power &amp; Light is a fictional utility"));
+                ok(path + " says it is a LogicMonitor demo", r.body().contains("LogicMonitor demo") && r.body().contains("href=\"/monitoring\""));
+                ok(path + " has no credit line unless one is configured", !r.body().contains("demo-credit"));
             }
             String home = get(base(s) + "/").body();
             for (String field : List.of("name=\"zip\"", "name=\"address\"", "name=\"phone\"", "name=\"notes\"",
@@ -53,6 +55,16 @@ class PagesTest {
             eq("HEAD works on pages", 200, EndToEndTest.client.send(
                     HttpRequest.newBuilder(URI.create(base(s) + "/areas")).method("HEAD", HttpRequest.BodyPublishers.noBody()).build(),
                     HttpResponse.BodyHandlers.discarding()).statusCode());
+        }
+    }
+
+    @TestRunner.Test
+    void theDeploymentCreditIsEscapedIntoEveryFooter() throws Exception {
+        try (OutageServer s = start("credit", "OUTAGE_DEMO_CREDIT", "Built for <the> demo & team")) {
+            for (String path : List.of("/", "/status", "/areas", "/monitoring")) {
+                String body = get(base(s) + path).body();
+                ok(path + " shows the escaped credit", body.contains("<p class=\"fine demo-credit\">Built for &lt;the&gt; demo &amp; team</p>"));
+            }
         }
     }
 
@@ -81,7 +93,7 @@ class PagesTest {
 
     @TestRunner.Test
     void pagesFetchNothingFromAnywhereElse() throws IOException {
-        for (String name : List.of("index.html", "status.html", "areas.html", "message.html", "app.css", "app.js", "icon.svg")) {
+        for (String name : List.of("index.html", "status.html", "areas.html", "monitoring.html", "message.html", "app.css", "app.js", "icon.svg")) {
             String text;
             try (InputStream in = Pages.class.getResourceAsStream("/outage/web/" + name)) {
                 text = new String(in.readAllBytes(), StandardCharsets.UTF_8);

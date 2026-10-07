@@ -85,7 +85,7 @@ public final class OutageServer implements AutoCloseable {
         this.service = new OutageService(store, config, System::currentTimeMillis);
         this.dispatcher = new Dispatcher(service, config, new SplittableRandom(), startedMs);
         this.storm = new StormSurge(service, chaos, config, new SplittableRandom());
-        this.pages = Pages.load();
+        this.pages = Pages.load(config.demoCredit());
     }
 
     public static OutageServer start(Config config) throws IOException, GeneralSecurityException, JMException {
@@ -256,6 +256,9 @@ public final class OutageServer implements AutoCloseable {
             }
             case "/areas" -> {
                 return isGet(method) ? page(ex, "areas.html") : methodNotAllowed(ex, "GET, HEAD");
+            }
+            case "/monitoring" -> {
+                return isGet(method) ? page(ex, "monitoring.html") : methodNotAllowed(ex, "GET, HEAD");
             }
             case "/report" -> {
                 return method.equals("POST") ? submitForm(ex) : methodNotAllowed(ex, "POST");

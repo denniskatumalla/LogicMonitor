@@ -34,7 +34,7 @@ class TicketStoreTest {
         try {
             String id;
             try (TicketStore s = TicketStore.open(dir, blocked::get)) {
-                Ticket t = s.create(Ticket.Source.WEB, REPORT, "harbor", 1_000);
+                Ticket t = s.create(Ticket.Source.WEB, REPORT, "edwin", 1_000);
                 id = t.id();
                 ok("EPL- and 6 unambiguous chars: " + id, id.matches("EPL-[2-9A-HJ-NP-Z]{6}"));
                 s.update(t.advance(Ticket.Status.CONFIRMED, 2_000, 60_000, 42, 0));
@@ -77,7 +77,7 @@ class TicketStoreTest {
                 eq(1, s.size());
                 eq(Ticket.Status.CONFIRMED, s.get("EPL-AAAAAA").orElseThrow().status());
                 eq("unknown ticket, ZIP outside the territory, torn line", 3, s.skippedOnLoad());
-                Ticket t = s.create(Ticket.Source.WEB, REPORT, "harbor", 1);
+                Ticket t = s.create(Ticket.Source.WEB, REPORT, "edwin", 1);
                 ok("appends after the torn line", s.get(t.id()).isPresent());
             }
         } finally {
@@ -89,17 +89,17 @@ class TicketStoreTest {
     void aFailedWriteLeavesNothingHalfDone() throws IOException {
         Path dir = tempDir();
         try (TicketStore s = TicketStore.open(dir, blocked::get)) {
-            Ticket t = s.create(Ticket.Source.WEB, REPORT, "harbor", 1);
+            Ticket t = s.create(Ticket.Source.WEB, REPORT, "edwin", 1);
             ok("healthy at start", s.healthy());
             blocked.set(true);
-            fails(IOException.class, () -> s.create(Ticket.Source.WEB, REPORT, "harbor", 2));
+            fails(IOException.class, () -> s.create(Ticket.Source.WEB, REPORT, "edwin", 2));
             fails(IOException.class, () -> s.update(t.advance(Ticket.Status.CONFIRMED, 3, 4, 5, 0)));
             eq("no unpersisted ticket", 1, s.size());
             eq("no unpersisted status change", Ticket.Status.REPORTED, s.get(t.id()).orElseThrow().status());
             ok("unhealthy while writes fail", !s.healthy());
             blocked.set(false);
             ok("recovers without a new write", s.healthy());
-            s.create(Ticket.Source.WEB, REPORT, "harbor", 6);
+            s.create(Ticket.Source.WEB, REPORT, "edwin", 6);
             eq(2, s.size());
         } finally {
             delete(dir);
@@ -112,12 +112,12 @@ class TicketStoreTest {
         TicketStore s = TicketStore.open(dir, blocked::get);
         try {
             Path file = dir.resolve(TicketStore.FILE);
-            s.create(Ticket.Source.WEB, REPORT, "harbor", 1);
+            s.create(Ticket.Source.WEB, REPORT, "edwin", 1);
             // Replace the log with a directory: the next write and every reopen fail for real.
             s.close();
             Files.delete(file);
             Files.createDirectory(file);
-            fails(IOException.class, () -> s.create(Ticket.Source.WEB, REPORT, "harbor", 2));
+            fails(IOException.class, () -> s.create(Ticket.Source.WEB, REPORT, "edwin", 2));
             ok("real I/O failure is visible", !s.healthy());
             Files.delete(file);
             Files.writeString(file, "", StandardOpenOption.CREATE);
@@ -140,7 +140,7 @@ class TicketStoreTest {
                     ts[i] = Thread.ofVirtual().start(() -> {
                         for (int j = 0; j < each; j++) {
                             try {
-                                s.create(Ticket.Source.WEB, REPORT, "harbor", 1);
+                                s.create(Ticket.Source.WEB, REPORT, "edwin", 1);
                             } catch (IOException e) {
                                 throw new IllegalStateException(e);
                             }

@@ -14,17 +14,21 @@
   <div class="wrap header-inner">
     <a class="brand" href="/">
       <img src="/static/icon.svg" alt="" width="40" height="40">
-      <span class="brand-text"><span class="brand-name">Example Power &amp; Light</span><span class="brand-sub">Outage Center</span></span>
+      <span class="brand-text"><span class="brand-name">Example Power &amp; Light</span><span class="brand-sub">Outage Center · a LogicMonitor demo</span></span>
     </a>
     <nav class="site-nav" aria-label="Outage Center">
       <ul>
         <li><a href="/">Report an outage</a></li>
         <li><a href="/status">Check status</a></li>
         <li><a href="/areas">Service areas</a></li>
+        <li><a href="/monitoring">How it's monitored</a></li>
       </ul>
     </nav>
   </div>
 </header>
+<div class="lm-ribbon">
+  <div class="wrap"><span class="lm-pill">LogicMonitor demo</span> Built to show hybrid observability end to end with LogicMonitor: LM Envision, Edwin AI, LM Logs and LM Uptime. <a href="/monitoring">See how this site is monitored</a></div>
+</div>
 <div class="storm-banner" id="storm-banner" role="status" {{stormHidden}}>
   <div class="wrap"><strong>Storm response in effect.</strong> We're receiving a very high number of outage reports. Restoration times are longer than usual and may change.</div>
 </div>
@@ -37,7 +41,8 @@
 <footer class="site-footer">
   <div class="wrap">
     <p><strong>Downed power line?</strong> Stay at least 35 feet away and call <a href="tel:+18005550142">1-800-555-0142</a> right away. Never report a downed line online.</p>
-    <p class="fine">Example Power &amp; Light is a fictional utility. This site is a monitoring demonstration and serves no real customers.</p>
+    <p class="fine">Example Power &amp; Light is a fictional utility. This site is a demonstration built to showcase LogicMonitor and serves no real customers. It is not an official LogicMonitor site.</p>
+    {{demoCredit}}
   </div>
 </footer>
 </body>

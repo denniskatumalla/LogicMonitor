@@ -22,12 +22,12 @@ final class Territory {
     }
 
     static final List<Area> AREAS = List.of(
-            new Area("harbor", "Harbor District", 10, 19, 412_000),
-            new Area("delta", "Delta Plains", 20, 29, 538_000),
-            new Area("cypress", "Cypress Ridge", 30, 39, 621_000),
-            new Area("magnolia", "Magnolia Flats", 40, 49, 487_000),
-            new Area("riverbend", "Riverbend", 50, 59, 356_000),
-            new Area("pinewood", "Pinewood Hills", 60, 69, 586_000));
+            new Area("edwin", "Edwin AI District", 10, 19, 412_000),
+            new Area("envision", "Envision Valley", 20, 29, 538_000),
+            new Area("collector", "Collector Cove", 30, 39, 621_000),
+            new Area("uptime", "Uptime Ridge", 40, 49, 487_000),
+            new Area("insights", "Service Insights Park", 50, 59, 356_000),
+            new Area("logs", "LM Logs Landing", 60, 69, 586_000));
 
     /**
      * Synthetic monitoring reports here. Accepted and stored like any other,

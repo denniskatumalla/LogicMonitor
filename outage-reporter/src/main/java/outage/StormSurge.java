@@ -15,7 +15,7 @@ import java.util.random.RandomGenerator;
 final class StormSurge {
 
     private static final long LOG_EVERY_MS = 10_000;
-    private static final List<String> LANDFALL = List.of("harbor", "delta");
+    private static final List<String> LANDFALL = List.of("edwin", "envision");
 
     private final OutageService service;
     private final Chaos chaos;

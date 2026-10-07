@@ -173,6 +173,17 @@ table.areas { width: 100%; border-collapse: collapse; font-variant-numeric: tabu
 .site-footer p { margin: 0 0 8px; }
 .site-footer .fine { font-size: .85rem; }
 
+/* LogicMonitor demo ribbon and the "How it's monitored" page */
+.lm-ribbon { background: #e8f4f3; border-bottom: 1px solid #b9dcd9; color: #0d3b39; font-size: .92rem; padding: 8px 0; }
+.lm-ribbon a { color: #0b5f5b; font-weight: 600; }
+.lm-pill { display: inline-block; margin-right: 8px; padding: 1px 10px; border-radius: 999px; background: #0b6e69; color: #fff; font-size: .78rem; font-weight: 700; letter-spacing: .02em; text-transform: uppercase; vertical-align: 1px; }
+.lm-map { width: 100%; border-collapse: collapse; }
+.lm-map th, .lm-map td { text-align: left; vertical-align: top; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.lm-map thead th { font-size: .85rem; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); background: #f6f8fa; }
+.lm-map td strong { color: var(--brand-dark); }
+.lm-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 24px; }
+.demo-credit { font-weight: 600; color: #0b5f5b; }
+
 /* Narrow screens */
 @media (max-width: 820px) {
   .layout { grid-template-columns: minmax(0, 1fr); }
@@ -191,4 +202,9 @@ table.areas { width: 100%; border-collapse: collapse; font-variant-numeric: tabu
   .areas td.loading-row { display: block; text-align: left; }
   .areas td.loading-row::before { content: none; }
   .bar { flex: 1; max-width: 60%; }
+  .lm-grid { grid-template-columns: minmax(0, 1fr); }
+  .lm-map thead { display: none; }
+  .lm-map, .lm-map tbody, .lm-map tr, .lm-map td { display: block; width: 100%; }
+  .lm-map td { border: 0; padding: 4px 16px; }
+  .lm-map tr { border-bottom: 1px solid var(--line); padding: 8px 0; }
 }

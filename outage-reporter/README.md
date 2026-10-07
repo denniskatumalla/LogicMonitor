@@ -27,7 +27,7 @@ one datapoint and one alert:
 
 ```
 Service:       Outage Reporter 1.0.0, Java 21+, zero third-party dependencies, one jar
-Public:        :8080  GET / · /status · /areas          customer web pages (no CDN, no external fetches)
+Public:        :8080  GET / · /status · /areas · /monitoring   customer web pages (no CDN, no external fetches)
                       POST /report                       form POST, works without JavaScript
                       POST /api/reports · GET /api/reports/{id} · GET /api/zip/{zip} · GET /api/areas
                       GET /health

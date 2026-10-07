@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How this site is monitored · Example Power &amp; Light</title>
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/app.js" defer></script>
+</head>
+<body data-page="monitoring">
+<a class="skip" href="#main">Skip to main content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="/">
+      <img src="/static/icon.svg" alt="" width="40" height="40">
+      <span class="brand-text"><span class="brand-name">Example Power &amp; Light</span><span class="brand-sub">Outage Center · a LogicMonitor demo</span></span>
+    </a>
+    <nav class="site-nav" aria-label="Outage Center">
+      <ul>
+        <li><a href="/">Report an outage</a></li>
+        <li><a href="/status">Check status</a></li>
+        <li><a href="/areas">Service areas</a></li>
+        <li><a href="/monitoring" aria-current="page">How it's monitored</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="lm-ribbon">
+  <div class="wrap"><span class="lm-pill">LogicMonitor demo</span> Built to show hybrid observability end to end with LogicMonitor: LM Envision, Edwin AI, LM Logs and LM Uptime. <a href="/monitoring">See how this site is monitored</a></div>
+</div>
+<div class="storm-banner" id="storm-banner" role="status" {{stormHidden}}>
+  <div class="wrap"><strong>Storm response in effect.</strong> We're receiving a very high number of outage reports. Restoration times are longer than usual and may change.</div>
+</div>
+<main id="main" class="wrap">
+<h1>How LogicMonitor watches this site</h1>
+<p class="lede">This outage center exists to show LogicMonitor's hybrid observability on a service that matters to customers. Every layer, from the cloud VM to the business outcome, reports into LogicMonitor, and each kind of failure raises one clear alert.</p>
+<div class="card table-card">
+  <table class="lm-map">
+    <caption class="visually-hidden">What LogicMonitor monitors on this site, and how</caption>
+    <thead>
+      <tr><th scope="col">What you see here</th><th scope="col">What could go wrong</th><th scope="col">How LogicMonitor watches it</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>You can open this page and report an outage</td><td>The site is unreachable or can't take reports</td><td><strong>LM Uptime</strong>: a multi-step web check from public checkpoints loads the page and submits a test report, just like a customer</td></tr>
+      <tr><td>Customers get a restoration estimate</td><td>A storm floods intake and customers wait</td><td><strong>Custom DataSource</strong> on the <strong>Collector</strong>: customers waiting for triage, customers affected, reports per minute</td></tr>
+      <tr><td>Pages and reports respond quickly</td><td>Slow responses, errors, a failed data store</td><td>The same DataSource: 95th-percentile latency, error rate and store health, each with its own threshold</td></tr>
+      <tr><td>The Java service behind the site</td><td>Memory pressure, garbage collection, threads</td><td><strong>JMX</strong> collection through the Collector</td></tr>
+      <tr><td>The Linux server</td><td>CPU, memory or disk exhausted; service stopped</td><td><strong>SNMP</strong> and <strong>SSH</strong> through the Collector</td></tr>
+      <tr><td>The cloud VM</td><td>Instance failure or failed status checks</td><td><strong>LM Envision</strong> cloud monitoring through a read-only AWS integration, independent of the Collector</td></tr>
+      <tr><td>The padlock on the secure version of this site</td><td>A certificate that is expiring or untrusted</td><td>A custom <strong>TLS certificate expiry</strong> DataSource</td></tr>
+      <tr><td>Every report, status change and storm</td><td>Something you need to trace after the fact</td><td><strong>LM Logs</strong>, alongside the metrics on the same resource</td></tr>
+    </tbody>
+  </table>
+</div>
+<div class="lm-grid">
+  <section class="card" aria-labelledby="one-alert">
+    <h2 id="one-alert">One alert per cause</h2>
+    <p>Each failure alerts on the measurement that names it. The rest is context, so on-call gets one clear page instead of five.</p>
+  </section>
+  <section class="card" aria-labelledby="business">
+    <h2 id="business">Business outcomes, not just servers</h2>
+    <p>In a storm every server metric stays green while customers wait. The alert that matters is on the customers waiting for an estimate.</p>
+  </section>
+  <section class="card" aria-labelledby="edwin">
+    <h2 id="edwin">From alerts to answers</h2>
+    <p><strong>Edwin AI</strong> groups related alerts into a single insight with a probable root cause, so teams fix the problem instead of triaging noise.</p>
+  </section>
+</div>
+</main>
+<footer class="site-footer">
+  <div class="wrap">
+    <p><strong>Downed power line?</strong> Stay at least 35 feet away and call <a href="tel:+18005550142">1-800-555-0142</a> right away. Never report a downed line online.</p>
+    <p class="fine">Example Power &amp; Light is a fictional utility. This site is a demonstration built to showcase LogicMonitor and serves no real customers. It is not an official LogicMonitor site.</p>
+    {{demoCredit}}
+  </div>
+</footer>
+</body>
+</html>

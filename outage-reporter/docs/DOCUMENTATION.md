@@ -206,7 +206,8 @@ and a Content-Security-Policy of `default-src 'self'` enforces that.
 |---|---|---|---|
 | Report an outage | `/` | Form with ZIP (required), street address, mobile number, what happened. Safety callout for downed lines | Posts to `/report` and gets a confirmation page with the ticket number |
 | Check status | `/status?ticket=…` or `?zip=…` | **Ticket:** a four-step progress bar with times, ETR (marked "revised" if it slipped), customers affected, last update. **ZIP:** open outages, customers affected, crews working, ETR range. Refreshes every 30 s | A note to turn on JavaScript or call |
-| Service areas | `/areas` | Totals (customers without power, open outages, crews, share out) and a table per area with a share-out bar. Refreshes every 15 s | A note |
+| Service areas | `/areas` | Totals (customers without power, open outages, crews, share out) and a table per area with a share-out bar. The six areas are named after LogicMonitor capabilities. Refreshes every 15 s | A note |
+| How it's monitored | `/monitoring` | Which LogicMonitor capability watches each part of the site, and why the alerts are designed the way they are | Fully readable; static |
 
 States the audience can see:
 
@@ -227,7 +228,10 @@ States the audience can see:
 
 The pages are responsive (the area table becomes stacked cards below 640 px),
 keyboard-accessible with visible focus and a skip link, and honour
-`prefers-reduced-motion`. The footer says the utility is fictional.
+`prefers-reduced-motion`. A ribbon on every page marks the site as a
+LogicMonitor demo. The footer says the utility is fictional and that this is
+not an official LogicMonitor site, plus an optional credit line
+(`OUTAGE_DEMO_CREDIT`).
 
 ### 3.2 HTTP API
 
@@ -258,7 +262,7 @@ customers as they are.
 
 ```json
 {"id":"EPL-ZKTW4X","status":"crew_assigned","statusLabel":"Crew assigned","zip":"00012",
- "area":{"id":"harbor","name":"Harbor District"},"address":"412 Bay St","phone":"•••-•••-0142",
+ "area":{"id":"edwin","name":"Edwin AI District"},"address":"412 Bay St","phone":"•••-•••-0142",
  "reportedAt":"…","updatedAt":"…","etr":"2026-10-09T15:47:37Z","etrRevisions":1,"customersAffected":86,
  "timeline":[{"status":"reported","label":"Reported","at":"…"}, … four steps, "at": null until reached]}
 ```
@@ -283,16 +287,16 @@ Sums are capped per area at the customers it serves.
 
 | Area | ZIPs | Customers served |
 |---|---|---|
-| Harbor District | 00010–00019 | 412,000 |
-| Delta Plains | 00020–00029 | 538,000 |
-| Cypress Ridge | 00030–00039 | 621,000 |
-| Magnolia Flats | 00040–00049 | 487,000 |
-| Riverbend | 00050–00059 | 356,000 |
-| Pinewood Hills | 00060–00069 | 586,000 |
+| Edwin AI District | 00010–00019 | 412,000 |
+| Envision Valley | 00020–00029 | 538,000 |
+| Collector Cove | 00030–00039 | 621,000 |
+| Uptime Ridge | 00040–00049 | 487,000 |
+| Service Insights Park | 00050–00059 | 356,000 |
+| LM Logs Landing | 00060–00069 | 586,000 |
 
 The load generator files a report every 7–40 s, depending on the time of
 the hour. That keeps roughly 15–75 outages open in steady state. A storm lands 45 % of its reports in
-Harbor District and 30 % in Delta Plains, the "coast".
+Edwin AI District and 30 % in Envision Valley, the "coast".
 
 ### 3.4 Configuration (environment)
 
@@ -309,6 +313,7 @@ variable is documented in
 | `OUTAGE_DEGRADED_P95_MS` / `_ERROR_PERCENT` / `OUTAGE_WINDOW_SECONDS` | `500` / `5` / `60` | Health rules |
 | `OUTAGE_CHAOS_LATENCY_MS` / `_ERROR_PERCENT` | `1500` / `50` | Chaos strength |
 | Outage model and storm | see [§3.3](#33-the-outage-model) | |
+| `OUTAGE_DEMO_CREDIT` | unset | Optional footer line saying who built the demo and for whom. Set per deployment, so it never lives in the repository |
 
 ### 3.5 Logs
 
@@ -318,8 +323,8 @@ collector, then LM Logs. No log line carries a customer's address or phone
 number.
 
 ```
-ts=2026-10-09T15:02:11.204Z level=INFO event=report_received id=EPL-ZKTW4X zip=00012 area=harbor channel=form synthetic=false
-ts=2026-10-09T15:02:21.880Z level=INFO event=ticket_status id=EPL-ZKTW4X status=confirmed area=harbor etr=2026-10-09T15:10:02Z etrRevisions=0 customers=86
+ts=2026-10-09T15:02:11.204Z level=INFO event=report_received id=EPL-ZKTW4X zip=00012 area=edwin channel=form synthetic=false
+ts=2026-10-09T15:02:21.880Z level=INFO event=ticket_status id=EPL-ZKTW4X status=confirmed area=edwin etr=2026-10-09T15:10:02Z etrRevisions=0 customers=86
 ts=2026-10-09T15:05:40.118Z level=WARN event=chaos_mode_changed from=off to=storm
 ts=2026-10-09T15:05:40.301Z level=WARN event=storm_surge_started peakReportsPerSecond=6 rampSeconds=10
 ts=2026-10-09T15:05:50.302Z level=INFO event=storm_surge reportsPerSecond=6.0 reports=31 total=31

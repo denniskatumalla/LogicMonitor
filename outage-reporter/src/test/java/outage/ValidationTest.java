@@ -13,9 +13,9 @@ class ValidationTest {
     void acceptsAZipAloneOrAnAddressEndingInOne() {
         eq(new Report("00012", "", "", ""), Report.from(Map.of("zip", "00012")));
         eq("ZIP+4 is cut to five digits", "00012", Report.from(Map.of("zip", "00012-3456")).zip());
-        Report r = Report.from(Map.of("address", "  12   Bay St,\tHarbor District 00014 "));
+        Report r = Report.from(Map.of("address", "  12   Bay St,\tEdwin AI District 00014 "));
         eq("00014", r.zip());
-        eq("whitespace and control characters collapse", "12 Bay St, Harbor District 00014", r.address());
+        eq("whitespace and control characters collapse", "12 Bay St, Edwin AI District 00014", r.address());
         eq("the ZIP field wins over the address", "00031",
                 Report.from(Map.of("zip", "00031", "address", "1 Main St 00014")).zip());
         eq(Territory.TEST_ZIP, Report.from(Map.of("zip", Territory.TEST_ZIP)).zip());

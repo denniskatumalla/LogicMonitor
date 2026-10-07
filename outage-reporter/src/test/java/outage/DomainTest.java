@@ -51,8 +51,8 @@ class DomainTest {
     void territoryIsSixFictionalAreasOfThreeMillionCustomers() {
         eq(6, Territory.AREAS.size());
         eq(3_000_000, Territory.customersServed());
-        eq("harbor", Territory.forZip("00010").orElseThrow().id());
-        eq("pinewood", Territory.forZip("00069").orElseThrow().id());
+        eq("edwin", Territory.forZip("00010").orElseThrow().id());
+        eq("logs", Territory.forZip("00069").orElseThrow().id());
         ok("below the territory", Territory.forZip("00009").isEmpty());
         ok("above the territory", Territory.forZip("00070").isEmpty());
         ok("a real-world ZIP", Territory.forZip("70112").isEmpty());
@@ -118,9 +118,9 @@ class DomainTest {
             Ticket t = d.report("00051");
             d.store.update(t.advance(Ticket.Status.CONFIRMED, d.now.get(), d.now.get() + 1, 1_000_000, 0));
             eq(356_000L, d.service.kpis().customersAffected());
-            Map<?, ?> riverbend = ((List<?>) d.service.areasJson().get("areas")).stream()
-                    .map(a -> (Map<?, ?>) a).filter(a -> a.get("id").equals("riverbend")).findFirst().orElseThrow();
-            eq(100.0, riverbend.get("pctAffected"));
+            Map<?, ?> insights = ((List<?>) d.service.areasJson().get("areas")).stream()
+                    .map(a -> (Map<?, ?>) a).filter(a -> a.get("id").equals("insights")).findFirst().orElseThrow();
+            eq(100.0, insights.get("pctAffected"));
         }
     }
 
@@ -146,7 +146,7 @@ class DomainTest {
             eq(null, j.get("customersAffected"));
             eq(null, j.get("etr"));
             eq(4, ((List<?>) j.get("timeline")).size());
-            eq(Map.of("id", "harbor", "name", "Harbor District"), j.get("area"));
+            eq(Map.of("id", "edwin", "name", "Edwin AI District"), j.get("area"));
         }
     }
 

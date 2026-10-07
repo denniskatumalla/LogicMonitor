@@ -138,7 +138,7 @@ class EndToEndTest {
 
             Map<?, ?> looked = json(get(base(s) + "/api/reports/" + id.toLowerCase()));
             eq(id, looked.get("id"));
-            eq("Harbor District", ((Map<?, ?>) looked.get("area")).get("name"));
+            eq("Edwin AI District", ((Map<?, ?>) looked.get("area")).get("name"));
 
             Map<?, ?> zip = json(get(base(s) + "/api/zip/00012"));
             eq(1.0, zip.get("openOutages"));
