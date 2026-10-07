@@ -9,9 +9,9 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 export AWS_REGION=${AWS_REGION:-us-east-1} AWS_PAGER=""
 name=outage-reporter
-key_name=shortlink-demo
+key_name=outage-reporter
 key_file=$HOME/.ssh/${key_name}.pem
-sg_name=shortlink-demo
+sg_name=outage-reporter
 instance_type=c7i-flex.large
 budget_email=""
 deploy=1

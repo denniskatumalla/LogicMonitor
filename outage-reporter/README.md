@@ -75,7 +75,7 @@ then closed at once and left out of every business figure.
 
 ## Health model
 
-`/health` returns one of three states. The rules are in `Health.classify`, unchanged from Shortlink:
+`/health` returns one of three states. The rules are in `Health.classify`:
 
 | Status | When | HTTP |
 |---|---|---|

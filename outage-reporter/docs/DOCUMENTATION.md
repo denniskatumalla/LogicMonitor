@@ -8,11 +8,6 @@ The [README](../README.md) is the design record. It explains *why* the
 domain model, health model, datapoint types and thresholds are what they
 are. This guide covers *how* and *what to type*.
 
-The infrastructure, the AWS research and the LogicMonitor research come from
-[Shortlink](../../shortlink/docs/DOCUMENTATION.md), the URL shortener this
-project replaces. What changed is the application on top: a customer-facing
-outage service with business datapoints.
-
 ---
 
 ## Contents
@@ -878,7 +873,7 @@ The free-tier-eligible EC2 types for these accounts are `t3.micro`,
 | **c7i-flex.large** | **2 / 4 GiB** | **0.08479** | **14.24** | **Yes, with about 1 GB of headroom** |
 | m7i-flex.large | 2 / 8 GiB | 0.09576 | 16.09 | Yes, with plenty to spare |
 
-The reasoning is the same as Shortlink's:
+Why this size:
 
 - **The collector sets the size.** LogicMonitor's Small collector "consumes
   approximately 2GB system memory". Nano is "intended for testing purposes
@@ -888,7 +883,7 @@ The reasoning is the same as Shortlink's:
 - **LM advises against burstable instances.** It says "Avoid burstable,
   shared-core, or CPU-credit-based instances" and recommends "AWS C- and
   M-series".
-- **Outage Reporter is about as small as Shortlink.** It has a 256 MB heap.
+- **The application is small.** It has a 256 MB heap.
   Even after a long storm it holds a few thousand tickets of about 300 bytes
   each.
 - **It's cheap.** About $16 a week all in, against $100–$200 of credits.
@@ -900,8 +895,7 @@ associate it.
 
 ### 4.3 Security group
 
-The rules are the same as for Shortlink, so a security group you already
-made for it (`shortlink-demo`) fits as it is:
+Security group `outage-reporter`, which `deploy/aws-up.sh` creates:
 
 | Port | Source | Why |
 |---|---|---|
@@ -920,7 +914,7 @@ Outbound: leave the default (all). The collector needs HTTPS (443) out to
 2. In the EC2 console, choose **Launch instance**:
    - Name `outage-reporter-demo`. Add the tag `Application=outage-reporter`.
    - AMI: Amazon Linux 2023 (x86_64). Type: `c7i-flex.large`.
-   - Key pair: reuse `shortlink-demo` if you already have it, or create one.
+   - Key pair: `outage-reporter`, created if you don't have one.
    - Network: default VPC, public subnet, auto-assign public IP, the
      security group from [§4.3](#43-security-group).
    - Storage: 30 GiB gp3.
@@ -929,10 +923,10 @@ Outbound: leave the default (all). The collector needs HTTPS (443) out to
 3. Wait for the status checks to show 2/2. Then:
 
    ```bash
-   deploy/push.sh ec2-user@<public-dns> ~/.ssh/shortlink-demo.pem
+   deploy/push.sh ec2-user@<public-dns> ~/.ssh/outage-reporter.pem
    # prints the /health JSON when the service is up
    open http://<public-dns>:8080/          # the customer page
-   ssh -i ~/.ssh/shortlink-demo.pem ec2-user@<public-dns> sudo cat /root/outage-reporter-lm-properties.txt
+   ssh -i ~/.ssh/outage-reporter.pem ec2-user@<public-dns> sudo cat /root/outage-reporter-lm-properties.txt
    ```
 
 `push.sh` waits for cloud-init to finish, installs the jar and restarts the
@@ -953,12 +947,6 @@ What cloud-init sets up (template: `deploy/cloud-init/user-data.template.sh`):
 | snmpd v2c, generated community, answers only the VM's own addresses | `/etc/snmp/snmpd.conf` |
 | `lmmonitor` user with a PEM key for LM's Linux SSH modules | `/etc/lm-ssh/` |
 | The LM properties to set, with the generated values | `/root/outage-reporter-lm-properties.txt` |
-
-**If a Shortlink instance is still running**, launch a new instance for
-Outage Reporter rather than converting the old one. The paths, the service
-user and the properties all differ. Terminate the Shortlink instance once the
-new one is up, so it stops using credits. If the old one is already in
-LogicMonitor, delete that resource, or move its properties across.
 
 ---
 
@@ -1149,12 +1137,31 @@ Put the business row first. It is what a utility executive asks about.
 
 ### 5.11 Optional: traces into LM APM (OpenTelemetry)
 
-This is unchanged from Shortlink: the OpenTelemetry Java agent sends OTLP
-directly to `https://<portal>.logicmonitor.com/rest/api` with a bearer
-token, with `-Dotel.service.name=outage-reporter`. Do it only if Thursday is
-ahead of plan. It's **unverified** whether the agent instruments the JDK's
-`com.sun.net.httpserver`. See the Shortlink guide's §5.11 for the full flag
-list.
+Optional. LogicMonitor documents sending OTLP **directly** to the portal,
+without running an OpenTelemetry collector:
+
+```bash
+# On the VM (one-time):
+sudo curl -sL -o /opt/outage-reporter/opentelemetry-javaagent.jar \
+  https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/latest/download/opentelemetry-javaagent.jar
+# Add to JAVA_OPTS in /etc/outage-reporter/outage-reporter.env, then: sudo systemctl restart outage-reporter
+-javaagent:/opt/outage-reporter/opentelemetry-javaagent.jar
+-Dotel.service.name=outage-reporter
+-Dotel.resource.attributes=service.namespace=outage-reporter,host.name=<private-ip>
+-Dotel.exporter.otlp.endpoint=https://<portal>.logicmonitor.com/rest/api
+-Dotel.exporter.otlp.protocol=http/protobuf
+-Dotel.exporter.otlp.headers=Authorization=Bearer <API bearer token with data-ingestion rights>
+-Dotel.metrics.exporter=none -Dotel.logs.exporter=none
+```
+
+These settings come from LM's *trace data forwarding without an OpenTelemetry
+collector* page. The endpoint, protocol, bearer header and
+`service.namespace` are all from there.
+
+**Unverified:** whether the agent automatically creates spans for the JDK's
+built-in `com.sun.net.httpserver` server. If **Traces** shows nothing after a
+few minutes of load, leave traces out rather than debug it live. The agent
+adds roughly 100 MB of RSS, which still fits on c7i-flex.large.
 
 ---
 
@@ -1218,8 +1225,7 @@ For production, set the trigger interval to **2 polls** on `p95LatencyMs`,
 
 ### 6.4 Root cause, and the collector on the same VM
 
-This is unchanged from Shortlink, and it's worth saying out loud in the
-demo: **the collector runs on the VM it monitors.** When the VM goes down:
+It's worth saying out loud in the demo: **the collector runs on the VM it monitors.** When the VM goes down:
 
 - **The collector goes with it.** No collector-based DataSource reports
   anything, so there's no Outage_Reporter_Health alert at all. The danger is
@@ -1293,8 +1299,7 @@ Then set `jmx.user` and `jmx.pass` on the resource.
 
 ### 7.5 Cost control and teardown
 
-- AWS Budgets: a $20 monthly budget with an email at 50 %, if not already set
-  up for Shortlink.
+- AWS Budgets: a $20 monthly budget with an email at 50 %.
 - When you're done, terminate the instance, release any Elastic IP,
   delete the IAM role, and remove the AWS integration from LogicMonitor.
 
@@ -1306,7 +1311,7 @@ Then set `jmx.user` and `jmx.pass` on the resource.
 |---|---|---|
 | `push.sh` hangs at `cloud-init status --wait` | First boot is still installing | Wait, or `sudo tail -f /var/log/cloud-init-output.log` |
 | `systemctl status outage-reporter` says *condition failed* | The jar isn't there yet | Run `deploy/push.sh` |
-| `startup_failed ... Address already in use` | Another process has 8080, 8081 or 8443 (an old Shortlink on the same box?) | `sudo ss -lntp \| grep -E ':(8080\|8081\|8443\|9010)'` |
+| `startup_failed ... Address already in use` | Another process has 8080, 8081 or 8443 (another copy of the service?) | `sudo ss -lntp \| grep -E ':(8080\|8081\|8443\|9010)'` |
 | The page loads but submitting says "Report not sent" | A chaos mode is on, or the store is failing | `sudo chaos`; `curl -s localhost:8080/health \| jq .storeOk` |
 | `reachable=0` but curl on the VM works | `system.hostname` isn't an address the app listens on | Set `outage.host` to the private IP |
 | The DataSource doesn't apply | `outage.port` missing or not numeric, or local collector monitoring is off | Check the property; [§5.2](#52-aws-cloud-monitoring-the-vm-layer) step 5 |
@@ -1323,8 +1328,7 @@ Then set `jmx.user` and `jmx.pass` on the resource.
 
 ## 9. Ubuntu instead of Amazon Linux
 
-The user data targets Amazon Linux 2023. The Ubuntu 24.04 differences are
-the same as for Shortlink:
+The user data targets Amazon Linux 2023. The Ubuntu 24.04 differences are:
 - **Packages:** `openjdk-21-jre-headless snmpd snmp jq xxd`.
 - **Service user shell:** `/usr/sbin/nologin`.
 - **Default SSH user:** `ubuntu`.
@@ -1366,10 +1370,10 @@ the same as for Shortlink:
   ([§6.2](#62-expected-timing-60-s-collection-trigger-and-clear-immediately)).
 
 **Checked against vendor documentation on 2026-10-06:**
-- Everything Shortlink checked: AWS free tier and instance types, LM
+- Infrastructure: AWS free tier and instance types, LM
   collector sizing, SNMP-first Linux, JMX, syslog LogSource, LM Uptime,
   derive and valid range, DAM and HostStatus.
-- New for this project:
+- Specific to this application:
   - LM web checks: multiple steps, GET/HEAD/POST per step, form-encoded POST
     data, expected status codes and text match, Follow redirect on by
     default, and the same options on internal checks;
@@ -1400,15 +1404,53 @@ URLs and quotes are in [§11 Sources](#11-sources).
 
 ## 11. Sources
 
-All of these were checked 2026-10-06. The AWS and LogicMonitor
-infrastructure sources are the same as Shortlink's and are listed in full in
-[Shortlink's runbook](../../shortlink/docs/#11-sources). They cover
-free tier plans and eligible types, EC2 prices, user data, Corretto, LM
-collector sizes and capacity, Linux via SSH, credentials properties, JMX,
-AWS setup, the syslog LogSource, web checks, datapoints, the Groovy 4
-collector, DAM, HostStatus, alert rules and OTLP.
+All of these were checked 2026-10-06. LogicMonitor support pages render
+client-side, so their quotes came from the page HTML.
 
-**New for this project**
+**AWS**
+- Free tier plans: <https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/free-tier-plans.html>.
+  Quotes: "you receive USD $100 in credits after you create an account…
+  earn up to an additional USD $100"; "won't incur any charges… ends after
+  six months or when your credits are fully used".
+- Credit activities: <https://aws.amazon.com/blogs/aws/aws-free-tier-update-new-customers-can-get-started-and-explore-aws-with-up-to-200-in-credits/>
+- Eligible EC2 types: <https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-free-tier-usage.html>.
+  Quote: "`t3.micro`, `t3.small`, `t4g.micro`, `t4g.small`, `c7i-flex.large`, `m7i-flex.large`".
+- Specs: <https://docs.aws.amazon.com/ec2/latest/instancetypes/gp.html>,
+  <https://docs.aws.amazon.com/ec2/latest/instancetypes/co.html>
+- Prices: the AWS Price List API EC2 us-east-1 offer file. Quote: "$0.08479
+  per On Demand Linux c7i-flex.large Instance Hour".
+- Public IPv4 ($0.005/h): <https://aws.amazon.com/vpc/pricing/>
+- EBS free tier (30 GB): <https://aws.amazon.com/ebs/pricing/>
+- User data runs as root, first boot only: <https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/user-data.html>
+- Corretto 21 on Amazon Linux: <https://docs.aws.amazon.com/corretto/latest/corretto-21-ug/amazon-linux-install.html>
+
+**LogicMonitor**
+- Collector sizes: <https://www.logicmonitor.com/support/adding-collector>.
+  Quotes: Small "approximately 2GB"; Nano "intended for testing purposes".
+- Capacity, and the advice against burstable instances: <https://www.logicmonitor.com/support/collector-capacity>
+- Linux via SSH (SNMP preferred; Service Status): <https://www.logicmonitor.com/support/monitoring/os-virtualization/linux-via-ssh-monitoring>
+- Credentials properties (ssh.*, jmx.*, snmp.*): <https://www.logicmonitor.com/support/getting-started/advanced-logicmonitor-setup/defining-authentication-credentials>
+- Java/JMX: <https://www.logicmonitor.com/support/monitoring/applications-databases/java-applications>,
+  <https://www.logicmonitor.com/support/jmx-active-discovery>,
+  <https://www.logicmonitor.com/support/logicmodules/datasources/data-collection-methods/jmx-data-collection>
+- AWS setup: <https://www.logicmonitor.com/support/aws-monitoring-setup>.
+  Local collector on cloud resources: <https://www.logicmonitor.com/support/cloud-monitoring-using-a-collector>
+- Syslog LogSource: <https://www.logicmonitor.com/support/syslog-logsource-configuration>.
+  agent.conf settings: <https://www.logicmonitor.com/support/agent-conf-collector-settings>
+- Web checks: <https://www.logicmonitor.com/support/adding-a-web-check>,
+  <https://www.logicmonitor.com/support/internal-web-checks-using-lm-uptime>,
+  <https://www.logicmonitor.com/support/alerts-for-lm-uptime>
+- Datapoints (counter/derive, valid range, trigger and clear): <https://www.logicmonitor.com/support/logicmodules/datasources/datapoints/normal-datapoints-legacyui>,
+  <https://www.logicmonitor.com/support/logicmodules/modules/datapoints/datapoint-overview>
+- Groovy 4 only from GD-39.004: <https://www.logicmonitor.com/release-notes/gd-collector-39-004>
+- Dependent Alert Mapping: <https://www.logicmonitor.com/support/dependent-alert-mapping>.
+  HostStatus: <https://www.logicmonitor.com/support/logicmodules/datasources/creating-managing-datasources/host-status-host-behavior>
+- Alert rules: <https://www.logicmonitor.com/support/alert-rules>.
+  Escalation chains: <https://www.logicmonitor.com/support/escalation-chains>
+- OTLP without a collector: <https://www.logicmonitor.com/support/trace-data-forwarding-without-an-opentelemetry-collector>
+- Widgets: <https://www.logicmonitor.com/support/dashboards-and-widgets/overview/what-are-widgets>
+
+**LM Uptime web checks**
 
 - **LM web check steps:**
   <https://www.logicmonitor.com/support/web-check-steps-analysis-in-lm-uptime>.
