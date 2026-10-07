@@ -1,0 +1,17 @@
+[Unit]
+Description=Shortlink synthetic traffic (demo load generator)
+After=shortlink.service
+
+[Service]
+Type=simple
+DynamicUser=yes
+Environment=TARGET=http://127.0.0.1:8080
+ExecStart=/opt/shortlink/loadgen.sh
+Restart=always
+RestartSec=10
+SyslogIdentifier=shortlink-loadgen
+# Its per-request output is noise; the service's own access log has every request.
+StandardOutput=null
+
+[Install]
+WantedBy=multi-user.target

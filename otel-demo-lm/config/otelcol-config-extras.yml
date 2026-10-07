@@ -1,0 +1,80 @@
+# otelcol-config-extras.yml -- LogicMonitor layer for the OpenTelemetry Demo 3.1.0
+#
+# Copied by setup.sh over opentelemetry-demo/src/otel-collector/otelcol-config-extras.yml.
+# The demo loads this file LAST (after otelcol-config.yml, -full.yml, -observability.yml).
+#
+# Design: we do NOT edit the demo's own traces/logs/metrics pipelines. The collector
+# replaces arrays when merging config layers, so editing an upstream pipeline means
+# copying its exporter list, and getting that list wrong can crash the collector.
+# Instead we add two extra pipelines that read from the same `otlp` receiver (a
+# receiver can feed several pipelines). This means:
+#   * Jaeger / Prometheus / OpenSearch / Grafana keep working exactly as before,
+#   * the LM path has its own processors (and an optional sampler) and its own queue,
+#   * the file still works in "no-o11y" mode, because it uses no observability exporters.
+#
+# Credentials are NOT stored here. The `logicmonitor` exporter (lm-data-sdk-go) reads
+# them from the collector container's environment, which config/compose.extras.yaml passes in:
+#   LMv1 (checked first):  LOGICMONITOR_ACCESS_ID + LOGICMONITOR_ACCESS_KEY
+#   Bearer (fallback):     LOGICMONITOR_BEARER_TOKEN   <- the value must include "Bearer ",
+#                          e.g. "Bearer lmb_xxx". The SDK sends it as-is in the Authorization header.
+# Do NOT also set `headers: Authorization:` here while using LMv1: the HTTP client
+# would overwrite the LMv1 signature with that header.
+#
+# Exporter facts (opentelemetry-collector-contrib v0.159.0, exporter/logicmonitorexporter):
+#   stability alpha, signals: traces + logs ONLY (no metrics).
+#   traces -> POST {endpoint}/api/v1/traces (OTLP protobuf)
+#   logs   -> POST {endpoint}/log/ingest     (LM Logs JSON)
+
+exporters:
+  logicmonitor:
+    endpoint: "https://${env:LOGICMONITOR_ACCOUNT}.logicmonitor.com/rest"
+    timeout: 30s
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 300s
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 2000
+      # The demo pipelines have no batch processor, so batch in the exporter queue.
+      # That way each request to LM carries many spans or logs, not one tiny payload each.
+      batch:
+        flush_timeout: 2s
+
+processors:
+  # LM Logs resource mapping. The exporter sends EVERY resource attribute as _lm.resourceId
+  # (verified against a mock endpoint: {"host.name":..,"service.name":..}). Those keys are not
+  # LM resource properties, so logs would land as "deviceless" logs. Instead:
+  #   * copy service/trace context into log attributes (sent as LM log metadata, so you can search on it)
+  #   * map ONLY system.hostname (= host.name, stamped by compose.extras.yaml) as the resource key.
+  transform/logicmonitor_logs:
+    error_mode: ignore
+    log_statements:
+      - context: log
+        statements:
+          - set(log.attributes["service.name"], resource.attributes["service.name"]) where resource.attributes["service.name"] != nil
+          - set(log.attributes["service.namespace"], resource.attributes["service.namespace"]) where resource.attributes["service.namespace"] != nil
+          - set(log.attributes["trace_id"], log.trace_id.string) where log.trace_id.string != ""
+          - set(log.attributes["span_id"], log.span_id.string) where log.span_id.string != ""
+      - context: resource
+        statements:
+          - set(resource.attributes["system.hostname"], resource.attributes["host.name"]) where resource.attributes["host.name"] != nil
+          - keep_keys(resource.attributes, ["system.hostname"])
+  # Optional: cut how many spans reach LM (LM APM bills per span ingested).
+  # To use it, add it to traces/logicmonitor -> processors below. Jaeger still gets 100%.
+  probabilistic_sampler/logicmonitor:
+    sampling_percentage: 50
+
+service:
+  pipelines:
+    traces/logicmonitor:
+      receivers: [otlp]
+      # Same span clean-up and PII redaction as the demo's own traces pipeline.
+      processors: [resource_detection, memory_limiter, transform/sanitize_spans, transform/redact_sensitive_data, redaction]
+      exporters: [logicmonitor]
+    logs/logicmonitor:
+      receivers: [otlp]
+      processors: [resource_detection, memory_limiter, transform/sanitize_logs, transform/logicmonitor_logs]
+      exporters: [logicmonitor]

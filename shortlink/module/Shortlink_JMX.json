@@ -1,0 +1,26 @@
+{
+  "_comment": "Spec for a JMX DataSource reading the app's own MBean, built by hand in the portal. Graph-only on purpose: alerting lives in Shortlink_Health, so one fault raises one alert. JVM internals (heap, GC, threads) come from LogicMonitor's built-in JVM modules via the same jmx.port.",
+  "name": "Shortlink_JMX",
+  "displayName": "Shortlink JMX",
+  "description": "In-process counters from the shortlink:type=Stats MBean over remote JMX.",
+  "group": "Shortlink",
+  "appliesTo": "shortlink.port =~ \"^[0-9]+$\" && jmx.port =~ \"^[0-9]+$\"",
+  "multiInstance": false,
+  "collectIntervalSeconds": 60,
+  "collection": {
+    "method": "jmx",
+    "url": "service:jmx:rmi:///jndi/rmi://##HOSTNAME##:##jmx.port##/jmxrmi"
+  },
+  "datapoints": [
+    { "name": "StatusCode",        "type": "gauge",  "objectName": "shortlink:type=Stats", "attribute": "StatusCode",        "description": "0 = UP, 1 = DEGRADED, 2 = DOWN" },
+    { "name": "UptimeSeconds",     "type": "gauge",  "objectName": "shortlink:type=Stats", "attribute": "UptimeSeconds" },
+    { "name": "Links",             "type": "gauge",  "objectName": "shortlink:type=Stats", "attribute": "Links" },
+    { "name": "RequestRate",       "type": "derive", "minValue": 0, "objectName": "shortlink:type=Stats", "attribute": "RequestsTotal" },
+    { "name": "ServerErrorRate",   "type": "derive", "minValue": 0, "objectName": "shortlink:type=Stats", "attribute": "ErrorsTotal" },
+    { "name": "ClientErrorRate",   "type": "derive", "minValue": 0, "objectName": "shortlink:type=Stats", "attribute": "ClientErrorsTotal" },
+    { "name": "P95LatencyMs",      "type": "gauge",  "objectName": "shortlink:type=Stats", "attribute": "P95LatencyMs" },
+    { "name": "ErrorRatePct",      "type": "gauge",  "objectName": "shortlink:type=Stats", "attribute": "ErrorRatePct" },
+    { "name": "StoreOk",           "type": "gauge",  "objectName": "shortlink:type=Stats", "attribute": "StoreOk",           "description": "1 = writable, 0 = not" },
+    { "name": "ChaosModeCode",     "type": "gauge",  "objectName": "shortlink:type=Stats", "attribute": "ChaosModeCode",     "description": "0 off, 1 latency, 2 errors, 3 store" }
+  ]
+}

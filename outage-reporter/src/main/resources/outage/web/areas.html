@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Outages by service area · Example Power &amp; Light</title>
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/app.js" defer></script>
+</head>
+<body data-page="areas">
+<a class="skip" href="#main">Skip to main content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="/">
+      <img src="/static/icon.svg" alt="" width="40" height="40">
+      <span class="brand-text"><span class="brand-name">Example Power &amp; Light</span><span class="brand-sub">Outage Center</span></span>
+    </a>
+    <nav class="site-nav" aria-label="Outage Center">
+      <ul>
+        <li><a href="/">Report an outage</a></li>
+        <li><a href="/status">Check status</a></li>
+        <li><a href="/areas" aria-current="page">Service areas</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="storm-banner" id="storm-banner" role="status" {{stormHidden}}>
+  <div class="wrap"><strong>Storm response in effect.</strong> We're receiving a very high number of outage reports. Restoration times are longer than usual and may change.</div>
+</div>
+<main id="main" class="wrap">
+<h1>Outages by service area</h1>
+<p class="lede">Open outages across our six service areas, updated every 15 seconds.</p>
+<div class="tiles" id="area-totals" aria-live="off">
+  <div class="tile"><span class="tile-label">Customers without power</span><span class="tile-value" id="t-customers">–</span></div>
+  <div class="tile"><span class="tile-label">Open outages</span><span class="tile-value" id="t-open">–</span></div>
+  <div class="tile"><span class="tile-label">Crews assigned</span><span class="tile-value" id="t-crews">–</span></div>
+  <div class="tile"><span class="tile-label">Share of customers out</span><span class="tile-value" id="t-pct">–</span></div>
+</div>
+<p class="notice" id="areas-notice" role="alert" hidden></p>
+<div class="card table-card">
+  <table class="areas">
+    <caption class="visually-hidden">Open outages and customers affected per service area</caption>
+    <thead>
+      <tr>
+        <th scope="col">Service area</th>
+        <th scope="col">ZIP codes</th>
+        <th scope="col" class="num">Customers served</th>
+        <th scope="col" class="num">Open outages</th>
+        <th scope="col" class="num">Customers out</th>
+        <th scope="col">Share out</th>
+        <th scope="col" class="num">Crews</th>
+        <th scope="col">Next restoration</th>
+      </tr>
+    </thead>
+    <tbody id="area-rows">
+      <tr><td colspan="8" class="loading-row"><span class="spinner dark" aria-hidden="true"></span> Loading outage information…</td></tr>
+    </tbody>
+  </table>
+</div>
+<p class="updated" id="areas-updated"></p>
+<noscript><p class="card">Turn on JavaScript to see the live outage table, or call 1-800-555-0142.</p></noscript>
+</main>
+<footer class="site-footer">
+  <div class="wrap">
+    <p><strong>Downed power line?</strong> Stay at least 35 feet away and call <a href="tel:+18005550142">1-800-555-0142</a> right away. Never report a downed line online.</p>
+    <p class="fine">Example Power &amp; Light is a fictional utility. This site is a monitoring demonstration and serves no real customers.</p>
+  </div>
+</footer>
+</body>
+</html>

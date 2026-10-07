@@ -1,0 +1,32 @@
+[Unit]
+Description=Shortlink URL shortener
+After=network-online.target
+Wants=network-online.target
+# Installed by cloud-init before the jar is copied up; start once it is there.
+ConditionPathExists=/opt/shortlink/shortlink.jar
+
+[Service]
+Type=simple
+User=shortlink
+Group=shortlink
+EnvironmentFile=/etc/shortlink/shortlink.env
+# $JAVA_OPTS and $JMX_OPTS unbraced, so systemd splits them into separate arguments.
+ExecStart=/usr/bin/java $JAVA_OPTS $JMX_OPTS -jar /opt/shortlink/shortlink.jar
+# The JVM exits 143 after running its shutdown hooks on SIGTERM; that is a clean stop.
+SuccessExitStatus=143
+# Crashes (and kill -9) come back on their own; `systemctl stop` stays stopped.
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+SyslogIdentifier=shortlink
+
+StateDirectory=shortlink
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+
+[Install]
+WantedBy=multi-user.target

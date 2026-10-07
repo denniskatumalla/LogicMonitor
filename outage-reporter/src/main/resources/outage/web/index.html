@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Report an outage · Example Power &amp; Light</title>
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/app.js" defer></script>
+</head>
+<body data-page="report">
+<a class="skip" href="#main">Skip to main content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="/">
+      <img src="/static/icon.svg" alt="" width="40" height="40">
+      <span class="brand-text"><span class="brand-name">Example Power &amp; Light</span><span class="brand-sub">Outage Center</span></span>
+    </a>
+    <nav class="site-nav" aria-label="Outage Center">
+      <ul>
+        <li><a href="/" aria-current="page">Report an outage</a></li>
+        <li><a href="/status">Check status</a></li>
+        <li><a href="/areas">Service areas</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="storm-banner" id="storm-banner" role="status" {{stormHidden}}>
+  <div class="wrap"><strong>Storm response in effect.</strong> We're receiving a very high number of outage reports. Restoration times are longer than usual and may change.</div>
+</div>
+<main id="main" class="wrap">
+<div class="layout">
+  <section class="card" aria-labelledby="report-title">
+    <h1 id="report-title">Report a power outage</h1>
+    <p class="lede">Tell us where the power is out. You'll get a ticket number to track the restoration.</p>
+    <form id="report-form" method="post" action="/report">
+      <div class="field">
+        <label for="zip">ZIP code <span class="req">(required)</span></label>
+        <input id="zip" name="zip" type="text" inputmode="numeric" autocomplete="postal-code" maxlength="10" required aria-describedby="zip-hint zip-error">
+        <p class="hint" id="zip-hint">We serve ZIP codes 00010 to 00069.</p>
+        <p class="error-text" id="zip-error" hidden></p>
+      </div>
+      <div class="field">
+        <label for="address">Street address <span class="opt">(optional)</span></label>
+        <input id="address" name="address" type="text" autocomplete="street-address" maxlength="120" aria-describedby="address-error">
+        <p class="error-text" id="address-error" hidden></p>
+      </div>
+      <div class="field">
+        <label for="phone">Mobile number for text updates <span class="opt">(optional)</span></label>
+        <input id="phone" name="phone" type="tel" autocomplete="tel" maxlength="30" aria-describedby="phone-error">
+        <p class="error-text" id="phone-error" hidden></p>
+      </div>
+      <div class="field">
+        <label for="notes">What happened? <span class="opt">(optional)</span></label>
+        <textarea id="notes" name="notes" rows="3" maxlength="500" aria-describedby="notes-hint notes-error"></textarea>
+        <p class="hint" id="notes-hint">For example: the lights flickered, then went out; a loud bang from the pole.</p>
+        <p class="error-text" id="notes-error" hidden></p>
+      </div>
+      <button type="submit" class="button primary" id="report-submit">
+        <span class="spinner" aria-hidden="true"></span><span class="button-label">Report outage</span>
+      </button>
+      <p class="slow-note" id="slow-note" hidden>Still sending your report. This is taking longer than usual.</p>
+    </form>
+    <div id="report-result" class="result" role="status" aria-live="polite" tabindex="-1" hidden></div>
+  </section>
+  <aside class="side">
+    <section class="card safety" aria-labelledby="safety-title">
+      <h2 id="safety-title">Safety first</h2>
+      <p>If you see a downed line, stay at least 35 feet away and call <a href="tel:+18005550142">1-800-555-0142</a>. Treat every line as live.</p>
+    </section>
+    <section class="card" aria-labelledby="already-title">
+      <h2 id="already-title">Already reported?</h2>
+      <p><a href="/status">Check your outage</a> with your ticket number or ZIP code.</p>
+    </section>
+    <section class="card" aria-labelledby="areas-title">
+      <h2 id="areas-title">Outages near you</h2>
+      <p><a href="/areas">See open outages by service area</a>, updated every 15 seconds.</p>
+    </section>
+  </aside>
+</div>
+</main>
+<footer class="site-footer">
+  <div class="wrap">
+    <p><strong>Downed power line?</strong> Stay at least 35 feet away and call <a href="tel:+18005550142">1-800-555-0142</a> right away. Never report a downed line online.</p>
+    <p class="fine">Example Power &amp; Light is a fictional utility. This site is a monitoring demonstration and serves no real customers.</p>
+  </div>
+</footer>
+</body>
+</html>

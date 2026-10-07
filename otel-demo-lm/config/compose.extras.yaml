@@ -1,0 +1,51 @@
+# compose.extras.yaml -- LogicMonitor layer for the OpenTelemetry Demo 3.1.0
+#
+# setup.sh copies this over opentelemetry-demo/compose.extras.yaml, which upstream ships
+# as an empty stub. `make start` loads it last:
+#   -f compose.yaml -f compose.full.yaml -f compose.observability.yaml -f compose.extras.yaml
+# All values below come from .env.override (passed with --env-file).
+
+services:
+  otel-collector:
+    environment:
+      # Read by the logicmonitor exporter / lm-data-sdk-go. If a variable is undefined,
+      # it is not set in the container.
+      - LOGICMONITOR_ACCOUNT
+      - LOGICMONITOR_ACCESS_ID
+      - LOGICMONITOR_ACCESS_KEY
+      - LOGICMONITOR_BEARER_TOKEN
+      # The resource_detection `env` detector runs first and overrides by default.
+      # This stamps host.name on every span and log record, so LM maps them to the
+      # VM's existing resource (host.name -> system.hostname) and does not create
+      # a duplicate resource. setup.sh sets LM_HOST_NAME to `hostname -f`.
+      - OTEL_RESOURCE_ATTRIBUTES=host.name=${LM_HOST_NAME},deployment.environment.name=${LM_DEPLOYMENT_ENV:-cta-demo}
+      # Give the collector room for two extra pipelines and the LM exporter queue
+      # (upstream: 400M limit, GOMEMLIMIT=160MiB).
+      - GOMEMLIMIT=400MiB
+    deploy:
+      resources:
+        limits:
+          memory: 700M
+
+  # Optional: cAdvisor, which LogicMonitor's Docker LogicModule uses to monitor containers.
+  # It only starts with:  COMPOSE_PROFILES=lm-cadvisor  (setup.sh --with-cadvisor)
+  # LM's docs publish cAdvisor on 8080, but the demo's frontend-proxy already uses 8080,
+  # so it goes on host port 8081 here. Check in the portal how the Docker DataSource picks its port.
+  cadvisor:
+    profiles: ["lm-cadvisor"]
+    image: ghcr.io/google/cadvisor:v0.60.6
+    container_name: cadvisor
+    privileged: true
+    restart: unless-stopped
+    ports:
+      - "8081:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    deploy:
+      resources:
+        limits:
+          memory: 200M

@@ -1,0 +1,195 @@
+{
+  "_comment": "Module definition and the source of truth for building the DataSource in a portal. Same layout as lm-tls-cert-expiry's module JSON; not LogicMonitor's export format.",
+  "name": "Outage_Reporter_Health",
+  "displayName": "Outage Reporter Health",
+  "description": "Technical and business health of the Outage Reporter service (Example Power & Light, fictional), read from its /health endpoint.",
+  "group": "Outage Reporter",
+  "appliesTo": "outage.port =~ \"^[0-9]+$\"",
+  "multiInstance": false,
+  "collectIntervalSeconds": 60,
+  "collection": {
+    "method": "script/embeddedGroovy",
+    "script": "../scripts/collection.groovy",
+    "timeoutSeconds": 60
+  },
+  "alertMessage": {
+    "subject": "Outage Reporter on ##HOST##: ##DATAPOINT## is ##VALUE## (##LEVEL##)",
+    "body": "Datapoint ##DATAPOINT## on ##HOST## is ##VALUE##, crossing threshold ##THRESHOLD##.\nCheck: on the VM, curl -s localhost:8080/health and journalctl -u outage-reporter --since -15min\nResource: ##HOST##   Level: ##LEVEL##"
+  },
+  "datapoints": [
+    {
+      "name": "reachable",
+      "description": "1 if /health returned an Outage Reporter health document (HTTP 200 or 503), 0 if nothing usable answered. When 0, every other datapoint is NaN.",
+      "type": "gauge",
+      "postProcessor": "keyValue",
+      "key": "reachable",
+      "threshold": { "op": "!=", "critical": 1 },
+      "alertMessage": {
+        "subject": "Outage Reporter is not answering on ##HOST##",
+        "body": "The collector could not get a health document from ##HOSTNAME## (/health on outage.port): stopped, crashed, port closed, or hung for 5 s. Customers cannot report outages online.\nCheck: systemctl status outage-reporter; journalctl -u outage-reporter -n 50\nResource: ##HOST##   Level: ##LEVEL##"
+      }
+    },
+    {
+      "name": "httpStatus",
+      "description": "HTTP status of /health: 200 for UP or DEGRADED, 503 for DOWN.",
+      "type": "gauge",
+      "postProcessor": "keyValue",
+      "key": "httpStatus"
+    },
+    {
+      "name": "responseTimeMs",
+      "description": "How long the /health request took from the collector, in ms.",
+      "type": "gauge",
+      "postProcessor": "keyValue",
+      "key": "responseTimeMs",
+      "threshold": { "op": ">", "warning": 2000 }
+    },
+    {
+      "name": "status",
+      "description": "Summary: 0 = UP, 1 = DEGRADED, 2 = DOWN. For dashboards; alerts come from the cause datapoints so one fault raises one alert.",
+      "type": "gauge",
+      "postProcessor": "keyValue",
+      "key": "status"
+    },
+    {
+      "name": "uptimeSeconds",
+      "description": "Seconds since the service started. Drops to near zero on every restart.",
+      "type": "gauge",
+      "postProcessor": "keyValue",
+      "key": "uptimeSeconds"
+    },
+    {
+      "name": "requestRate",
+      "description": "Requests per second (excluding /health), from the requestsTotal counter.",
+      "type": "derive",
+      "minValue": 0,
+      "postProcessor": "keyValue",
+      "key": "requestsTotal"
+    },
+    {
+      "name": "serverErrorRate",
+      "description": "5xx responses per second, from the errorsTotal counter.",
+      "type": "derive",
+      "minValue": 0,
+      "postProcessor": "keyValue",
+      "key": "errorsTotal"
+    },
+    {
+      "name": "clientErrorRate",
+      "description": "4xx responses per second (bad input, unknown tickets), from the clientErrorsTotal counter.",
+      "type": "derive",
+      "minValue": 0,
+      "postProcessor": "keyValue",
+      "key": "clientErrorsTotal"
+    },
+    {
+      "name": "p95LatencyMs",
+      "description": "95th percentile request latency over the service's last 60 s, in ms.",
+      "type": "gauge",
+      "postProcessor": "keyValue",
+      "key": "p95LatencyMs",
+      "threshold": { "op": ">", "warning": 500, "error": 1000 },
+      "alertMessage": {
+        "subject": "Outage Reporter is slow on ##HOST##: p95 ##VALUE## ms",
+        "body": "p95 latency over the last 60 s is ##VALUE## ms, crossing ##THRESHOLD##. Customers reporting outages are waiting on a spinner, and some will give up and call instead.\nCheck: GC and CPU on the JVM graphs; chaosMode on this DataSource; journalctl -u outage-reporter | grep ms=\nResource: ##HOST##   Level: ##LEVEL##"
+      }
+    },
+    {
+      "name": "errorRatePct",
+      "description": "Share of requests over the last 60 s that returned 5xx, in percent.",
+      "type": "gauge",
+      "postProcessor": "keyValue",
+      "key": "errorRatePct",
+      "threshold": { "op": ">", "warning": 5, "error": 20 },
+      "alertMessage": {
+        "subject": "Outage Reporter is failing requests on ##HOST##: ##VALUE##% 5xx",
+        "body": "##VALUE##% of requests in the last 60 s returned a server error, crossing ##THRESHOLD##. failedReportsLastMinute shows how many customers could not report an outage.\nCheck: LM Logs for this resource, filter level=ERROR or status=500\nResource: ##HOST##   Level: ##LEVEL##"
+      }
+    },
+    {
+      "name": "storeOk",
+      "description": "1 if the ticket store can take writes, else 0. 0 makes the service report DOWN (HTTP 503).",
+      "type": "gauge",
+      "postProcessor": "keyValue",
+      "key": "storeOk",
+      "threshold": { "op": "!=", "critical": 1 },
+      "alertMessage": {
+        "subject": "Outage Reporter cannot write its store on ##HOST##",
+        "body": "The ticket store is not accepting writes: new outage reports are refused, and the dispatcher cannot record confirmations, crews or restorations. Ticket lookups still work.\nCheck: df -h /var/lib/outage-reporter; ls -l /var/lib/outage-reporter; journalctl -u outage-reporter | grep -E 'store_|dispatcher_'\nResource: ##HOST##   Level: ##LEVEL##"
+      }
+    },
+    {
+      "name": "chaosMode",
+      "description": "Fault injection in effect: 0 = off, 1 = latency, 2 = errors, 3 = store, 4 = storm. Non-zero means an alert was caused on purpose.",
+      "type": "gauge",
+      "postProcessor": "keyValue",
+      "key": "chaosMode"
+    },
+    {
+      "name": "reportsLastMinute",
+      "description": "Customer outage reports accepted in the last 60 s (synthetic checks excluded). The intake rate; storm response is declared at 60.",
+      "type": "gauge",
+      "postProcessor": "keyValue",
+      "key": "reportsLastMinute"
+    },
+    {
+      "name": "failedReportsLastMinute",
+      "description": "Report submissions in the last 60 s that got a 5xx: customers who tried to report an outage and could not. The business face of errorRatePct and storeOk, so no threshold of its own.",
+      "type": "gauge",
+      "postProcessor": "keyValue",
+      "key": "failedReportsLastMinute"
+    },
+    {
+      "name": "openOutages",
+      "description": "Outage tickets not yet restored.",
+      "type": "gauge",
+      "postProcessor": "keyValue",
+      "key": "openOutages"
+    },
+    {
+      "name": "customersAffected",
+      "description": "Customers without power across confirmed open outages, capped per service area at the customers it serves.",
+      "type": "gauge",
+      "postProcessor": "keyValue",
+      "key": "customersAffected"
+    },
+    {
+      "name": "awaitingTriage",
+      "description": "Reports not yet confirmed: customers who have reported and have no ETR yet. Normally under 5; it grows only when reports arrive faster than triage capacity (180 a minute by default).",
+      "type": "gauge",
+      "postProcessor": "keyValue",
+      "key": "awaitingTriage",
+      "threshold": { "op": ">", "warning": 60, "error": 150 },
+      "alertMessage": {
+        "subject": "Outage reports are backing up on ##HOST##: ##VALUE## awaiting triage",
+        "body": "##VALUE## outage reports are waiting to be confirmed, crossing ##THRESHOLD##. Reports are arriving faster than they can be triaged, so customers are waiting without an estimated restoration time. The service itself is healthy: this is a capacity alert, not a fault.\nAct: start storm staffing (more triage capacity); check reportsLastMinute and the service-area view for where the surge is landing.\nResource: ##HOST##   Level: ##LEVEL##"
+      }
+    },
+    {
+      "name": "oldestOpenMinutes",
+      "description": "Age of the oldest open outage ticket, in minutes. Normal restorations take 6–15 minutes in this compressed model, up to about 30 under storm response.",
+      "type": "gauge",
+      "postProcessor": "keyValue",
+      "key": "oldestOpenMinutes",
+      "threshold": { "op": ">", "warning": 60 },
+      "alertMessage": {
+        "subject": "An outage on ##HOST## has been open ##VALUE## minutes",
+        "body": "The oldest open outage ticket is ##VALUE## minutes old, crossing ##THRESHOLD##: about twice the longest restoration the model expects, even under storm response. Something has stalled.\nCheck: overdueOutages; storeOk; journalctl -u outage-reporter | grep dispatcher_\nResource: ##HOST##   Level: ##LEVEL##"
+      }
+    },
+    {
+      "name": "overdueOutages",
+      "description": "Open outages more than 30 s past their estimated restoration time: promises to customers that were missed. Context for storeOk and oldestOpenMinutes, so no threshold of its own.",
+      "type": "gauge",
+      "postProcessor": "keyValue",
+      "key": "overdueOutages"
+    },
+    {
+      "name": "stormMode",
+      "description": "1 while storm response is in effect (60 or more reports in the last minute), else 0. Customers see a storm banner and longer ETRs.",
+      "type": "gauge",
+      "postProcessor": "keyValue",
+      "key": "stormMode"
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+[Unit]
+Description=Outage Reporter synthetic customer traffic (demo load generator)
+After=outage-reporter.service
+
+[Service]
+Type=simple
+DynamicUser=yes
+Environment=TARGET=http://127.0.0.1:8080
+ExecStart=/opt/outage-reporter/loadgen.sh
+Restart=always
+RestartSec=10
+SyslogIdentifier=outage-reporter-loadgen
+# Its per-request output is noise; the service's own access log has every request.
+StandardOutput=null
+
+[Install]
+WantedBy=multi-user.target

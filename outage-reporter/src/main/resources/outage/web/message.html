@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{title}} · Example Power &amp; Light</title>
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/app.js" defer></script>
+</head>
+<body data-page="message">
+<a class="skip" href="#main">Skip to main content</a>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="/">
+      <img src="/static/icon.svg" alt="" width="40" height="40">
+      <span class="brand-text"><span class="brand-name">Example Power &amp; Light</span><span class="brand-sub">Outage Center</span></span>
+    </a>
+    <nav class="site-nav" aria-label="Outage Center">
+      <ul>
+        <li><a href="/">Report an outage</a></li>
+        <li><a href="/status">Check status</a></li>
+        <li><a href="/areas">Service areas</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+<div class="storm-banner" id="storm-banner" role="status" {{stormHidden}}>
+  <div class="wrap"><strong>Storm response in effect.</strong> We're receiving a very high number of outage reports. Restoration times are longer than usual and may change.</div>
+</div>
+<main id="main" class="wrap">
+<section class="card message {{tone}}">
+  <h1>{{heading}}</h1>
+  {{body}}
+</section>
+</main>
+<footer class="site-footer">
+  <div class="wrap">
+    <p><strong>Downed power line?</strong> Stay at least 35 feet away and call <a href="tel:+18005550142">1-800-555-0142</a> right away. Never report a downed line online.</p>
+    <p class="fine">Example Power &amp; Light is a fictional utility. This site is a monitoring demonstration and serves no real customers.</p>
+  </div>
+</footer>
+</body>
+</html>

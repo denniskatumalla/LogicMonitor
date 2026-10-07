@@ -1,0 +1,136 @@
+{
+  "_comment": "Module definition and the source of truth for building the DataSource in a portal. Same layout as lm-tls-cert-expiry's module JSON; not LogicMonitor's export format.",
+  "name": "Shortlink_Health",
+  "displayName": "Shortlink Health",
+  "description": "Application health of the Shortlink URL shortener, read from its /health endpoint.",
+  "group": "Shortlink",
+  "appliesTo": "shortlink.port =~ \"^[0-9]+$\"",
+  "multiInstance": false,
+  "collectIntervalSeconds": 60,
+  "collection": {
+    "method": "script/embeddedGroovy",
+    "script": "../scripts/collection.groovy",
+    "timeoutSeconds": 60
+  },
+  "alertMessage": {
+    "subject": "Shortlink on ##HOST##: ##DATAPOINT## is ##VALUE## (##LEVEL##)",
+    "body": "Datapoint ##DATAPOINT## on ##HOST## is ##VALUE##, crossing threshold ##THRESHOLD##.\nCheck: on the VM, curl -s localhost:8080/health and journalctl -u shortlink --since -15min\nResource: ##HOST##   Level: ##LEVEL##"
+  },
+  "datapoints": [
+    {
+      "name": "reachable",
+      "description": "1 if /health returned a Shortlink health document (HTTP 200 or 503), 0 if nothing usable answered. When 0, every other datapoint is NaN.",
+      "type": "gauge",
+      "postProcessor": "keyValue",
+      "key": "reachable",
+      "threshold": { "op": "!=", "critical": 1 },
+      "alertMessage": {
+        "subject": "Shortlink is not answering on ##HOST##",
+        "body": "The collector could not get a health document from ##HOSTNAME## (/health on shortlink.port) (stopped, crashed, port closed, or hung for 5 s).\nCheck: systemctl status shortlink; journalctl -u shortlink -n 50\nResource: ##HOST##   Level: ##LEVEL##"
+      }
+    },
+    {
+      "name": "httpStatus",
+      "description": "HTTP status of /health: 200 for UP or DEGRADED, 503 for DOWN.",
+      "type": "gauge",
+      "postProcessor": "keyValue",
+      "key": "httpStatus"
+    },
+    {
+      "name": "responseTimeMs",
+      "description": "How long the /health request took from the collector, in ms.",
+      "type": "gauge",
+      "postProcessor": "keyValue",
+      "key": "responseTimeMs",
+      "threshold": { "op": ">", "warning": 2000 }
+    },
+    {
+      "name": "status",
+      "description": "Summary: 0 = UP, 1 = DEGRADED, 2 = DOWN. For dashboards; alerts come from the cause datapoints so one fault raises one alert.",
+      "type": "gauge",
+      "postProcessor": "keyValue",
+      "key": "status"
+    },
+    {
+      "name": "uptimeSeconds",
+      "description": "Seconds since the service started. Drops to near zero on every restart.",
+      "type": "gauge",
+      "postProcessor": "keyValue",
+      "key": "uptimeSeconds"
+    },
+    {
+      "name": "links",
+      "description": "Short links in the store.",
+      "type": "gauge",
+      "postProcessor": "keyValue",
+      "key": "links"
+    },
+    {
+      "name": "requestRate",
+      "description": "Requests per second (excluding /health), from the requestsTotal counter.",
+      "type": "derive",
+      "minValue": 0,
+      "postProcessor": "keyValue",
+      "key": "requestsTotal"
+    },
+    {
+      "name": "serverErrorRate",
+      "description": "5xx responses per second, from the errorsTotal counter.",
+      "type": "derive",
+      "minValue": 0,
+      "postProcessor": "keyValue",
+      "key": "errorsTotal"
+    },
+    {
+      "name": "clientErrorRate",
+      "description": "4xx responses per second (bad input, unknown codes), from the clientErrorsTotal counter.",
+      "type": "derive",
+      "minValue": 0,
+      "postProcessor": "keyValue",
+      "key": "clientErrorsTotal"
+    },
+    {
+      "name": "p95LatencyMs",
+      "description": "95th percentile request latency over the service's last 60 s, in ms.",
+      "type": "gauge",
+      "postProcessor": "keyValue",
+      "key": "p95LatencyMs",
+      "threshold": { "op": ">", "warning": 500, "error": 1000 },
+      "alertMessage": {
+        "subject": "Shortlink is slow on ##HOST##: p95 ##VALUE## ms",
+        "body": "p95 latency over the last 60 s is ##VALUE## ms, crossing ##THRESHOLD##. Users are waiting on redirects.\nCheck: GC and CPU on the JVM graphs; chaosMode on this DataSource; journalctl -u shortlink | grep ms=\nResource: ##HOST##   Level: ##LEVEL##"
+      }
+    },
+    {
+      "name": "errorRatePct",
+      "description": "Share of requests over the last 60 s that returned 5xx, in percent.",
+      "type": "gauge",
+      "postProcessor": "keyValue",
+      "key": "errorRatePct",
+      "threshold": { "op": ">", "warning": 5, "error": 20 },
+      "alertMessage": {
+        "subject": "Shortlink is failing requests on ##HOST##: ##VALUE##% 5xx",
+        "body": "##VALUE##% of requests in the last 60 s returned a server error, crossing ##THRESHOLD##.\nCheck: LM Logs for this resource, filter level=ERROR or status=500\nResource: ##HOST##   Level: ##LEVEL##"
+      }
+    },
+    {
+      "name": "storeOk",
+      "description": "1 if the link store can take writes, else 0. 0 makes the service report DOWN (HTTP 503).",
+      "type": "gauge",
+      "postProcessor": "keyValue",
+      "key": "storeOk",
+      "threshold": { "op": "!=", "critical": 1 },
+      "alertMessage": {
+        "subject": "Shortlink cannot write its store on ##HOST##",
+        "body": "The link store is not accepting writes, so new links cannot be created and /health reports DOWN. Existing links still redirect.\nCheck: df -h /var/lib/shortlink; ls -l /var/lib/shortlink; journalctl -u shortlink | grep store_\nResource: ##HOST##   Level: ##LEVEL##"
+      }
+    },
+    {
+      "name": "chaosMode",
+      "description": "Fault injection in effect: 0 = off, 1 = latency, 2 = errors, 3 = store. Non-zero means an alert was caused on purpose.",
+      "type": "gauge",
+      "postProcessor": "keyValue",
+      "key": "chaosMode"
+    }
+  ]
+}

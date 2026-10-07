@@ -1,0 +1,94 @@
+# otelcol-config-extras-with-metrics.yml -- OPT-IN variant (setup.sh --with-otlp-metrics)
+#
+# Everything in otelcol-config-extras.yml (traces + logs to LM), plus an EXPERIMENTAL
+# metrics path that sends OTLP metrics straight to LogicMonitor.
+#
+# Why experimental (as of 2026-10-06):
+#   * The contrib `logicmonitor` exporter supports traces and logs only (no metrics).
+#   * LogicMonitor's Go data SDK added OTLP metrics in v1.4.0 (2026-08-28). It posts to
+#     {portal}/rest/api/v1/metrics. I found no public LM support page that documents this
+#     endpoint, so check it in the portal first (lm-smoke-test.py --metrics tests it).
+#   * A plain otlp_http exporter cannot compute LMv1 HMAC signatures, so this path
+#     needs a BEARER token: LOGICMONITOR_BEARER_TOKEN="Bearer lmb_...".
+#   * The documented ways to get OTel metrics into LM are its own collector (lmotel,
+#     whose lmexporter has a metrics pipeline), Push Metrics, or OpenMetrics DataSources.
+#     These metrics count as "APM Metrics" (billed per datapoint).
+#
+# If you see 401/403/404 from this exporter, drop back to config/otelcol-config-extras.yml.
+# Traces and logs keep flowing either way, because each pipeline has its own exporter queue.
+
+exporters:
+  logicmonitor:
+    endpoint: "https://${env:LOGICMONITOR_ACCOUNT}.logicmonitor.com/rest"
+    timeout: 30s
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 300s
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 2000
+      batch:
+        flush_timeout: 2s
+
+  otlp_http/logicmonitor_metrics:
+    metrics_endpoint: "https://${env:LOGICMONITOR_ACCOUNT}.logicmonitor.com/rest/api/v1/metrics"
+    encoding: proto
+    compression: gzip
+    timeout: 30s
+    headers:
+      Authorization: "${env:LOGICMONITOR_BEARER_TOKEN}"
+    retry_on_failure:
+      enabled: true
+      max_elapsed_time: 120s
+    sending_queue:
+      enabled: true
+      queue_size: 500
+      batch:
+        flush_timeout: 10s
+
+processors:
+  # LM Logs resource mapping. The exporter sends EVERY resource attribute as _lm.resourceId
+  # (verified against a mock endpoint: {"host.name":..,"service.name":..}). Those keys are not
+  # LM resource properties, so logs would land as "deviceless" logs. Instead:
+  #   * copy service/trace context into log attributes (sent as LM log metadata, so you can search on it)
+  #   * map ONLY system.hostname (= host.name, stamped by compose.extras.yaml) as the resource key.
+  transform/logicmonitor_logs:
+    error_mode: ignore
+    log_statements:
+      - context: log
+        statements:
+          - set(log.attributes["service.name"], resource.attributes["service.name"]) where resource.attributes["service.name"] != nil
+          - set(log.attributes["service.namespace"], resource.attributes["service.namespace"]) where resource.attributes["service.namespace"] != nil
+          - set(log.attributes["trace_id"], log.trace_id.string) where log.trace_id.string != ""
+          - set(log.attributes["span_id"], log.span_id.string) where log.span_id.string != ""
+      - context: resource
+        statements:
+          - set(resource.attributes["system.hostname"], resource.attributes["host.name"]) where resource.attributes["host.name"] != nil
+          - keep_keys(resource.attributes, ["system.hostname"])
+  probabilistic_sampler/logicmonitor:
+    sampling_percentage: 50
+  # Keep the number of metric series (and APM Metrics datapoints) small: drop per-process host metrics.
+  filter/logicmonitor_metrics:
+    error_mode: ignore
+    metrics:
+      metric:
+        - 'IsMatch(name, "^process\\.")'
+
+service:
+  pipelines:
+    traces/logicmonitor:
+      receivers: [otlp]
+      processors: [resource_detection, memory_limiter, transform/sanitize_spans, transform/redact_sensitive_data, redaction]
+      exporters: [logicmonitor]
+    logs/logicmonitor:
+      receivers: [otlp]
+      processors: [resource_detection, memory_limiter, transform/sanitize_logs, transform/logicmonitor_logs]
+      exporters: [logicmonitor]
+    metrics/logicmonitor:
+      # span_metrics = RED metrics derived from traces; host_metrics + docker_stats = VM and containers.
+      receivers: [span_metrics, host_metrics, docker_stats]
+      processors: [resource_detection, memory_limiter, filter/logicmonitor_metrics]
+      exporters: [otlp_http/logicmonitor_metrics]
