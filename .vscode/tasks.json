@@ -1,0 +1,26 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "outage-reporter: build",
+      "type": "shell",
+      "command": "${workspaceFolder}/outage-reporter/build.sh",
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": "$javac"
+    },
+    {
+      "label": "outage-reporter: run tests",
+      "type": "shell",
+      "command": "${workspaceFolder}/outage-reporter/run-tests.sh",
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "outage-reporter: tunnel to VM debugger",
+      "type": "shell",
+      "command": "ssh -N -L 5005:127.0.0.1:5005 outage-vm",
+      "isBackground": true,
+      "problemMatcher": []
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "java.project.sourcePaths": [
+    "outage-reporter/src/main/java",
+    "outage-reporter/src/test/java"
+  ],
+  "java.project.outputPath": "outage-reporter/build/vscode-classes"
+}
