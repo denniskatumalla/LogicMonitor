@@ -6,8 +6,12 @@
       "type": "java",
       "request": "launch",
       "mainClass": "outage.Main",
-      "classPaths": ["${workspaceFolder}/outage-reporter/build/classes"],
-      "sourcePaths": ["${workspaceFolder}/outage-reporter/src/main/java"],
+      "classPaths": [
+        "${workspaceFolder}/outage-reporter/build/classes"
+      ],
+      "sourcePaths": [
+        "${workspaceFolder}/outage-reporter/src/main/java"
+      ],
       "preLaunchTask": "outage-reporter: build",
       "console": "integratedTerminal",
       "env": {
@@ -17,14 +21,6 @@
         "OUTAGE_DATA_DIR": "${workspaceFolder}/outage-reporter/build/local-data",
         "OUTAGE_DEMO_CREDIT": "Local debug build"
       }
-    },
-    {
-      "name": "Outage Reporter (attach to VM)",
-      "type": "java",
-      "request": "attach",
-      "hostName": "127.0.0.1",
-      "port": 5005,
-      "sourcePaths": ["${workspaceFolder}/outage-reporter/src/main/java"]
     }
   ]
 }
