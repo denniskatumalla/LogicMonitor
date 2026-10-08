@@ -1,4 +1,8 @@
 # Local-only material: reference documents and personal notes.
-Collateral/
+# In Collateral/, only the shareable presentation is tracked.
+Collateral/*
+!Collateral/CTA_Presentation_Dennis_Katumalla_DRAFT.pptx
+!Collateral/CTA_Presentation_Dennis_Katumalla_DRAFT.pdf
+!Collateral/CTA_Presentation_Speaker_Notes.md
 */docs/RUNBOOK.md
 */docs/DEMO.md
