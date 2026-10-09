@@ -958,15 +958,31 @@ label them slightly differently.
 
 ### 5.1 Collector
 
-1. **Settings → Collectors → Add**, Linux, **size Small**. Copy the install
-   command the portal gives you.
-2. On the VM, run it (`sudo bash LogicMonitor_Collector_*.bin -y`), then
-   `sudo systemctl status logicmonitor-agent`.
+1. **Settings → Collectors → Add**, Linux, **size Small** (Medium needs the
+   VM's whole 4 GB). Turn **Monitor the device on which the collector is
+   installed** off and **Enable log collection for Syslog and SNMP trap** on.
+   Choose **Bootstrap**, then **Get cURL cmd**.
+2. On the VM, run that command, then `sudo ./LogicMonitor_Collector_*.bin -y`.
 3. Check: the collector shows as up in the portal, with a recent heartbeat.
 
-If the installer offers to add its own host as a resource, **decline**, or
-delete the result afterwards. The VM should be represented by its AWS cloud
-resource.
+Collector 41.x installs as the non-root user `logicmonitor`, with
+user-level systemd services (`logicmonitor-agent`, `logicmonitor-watchdog`).
+That user cannot read the SSH key cloud-init created for the Linux SSH
+modules, so give its group read access:
+
+```bash
+sudo chgrp logicmonitor /etc/lm-ssh /etc/lm-ssh/lmmonitor_id_rsa
+sudo chmod 750 /etc/lm-ssh
+sudo chmod 640 /etc/lm-ssh/lmmonitor_id_rsa
+```
+
+**Where the VM's collector-based monitoring lives.** In the portal used to
+build this demo, the AWS cloud resource offered no local collector in its
+Manage dialog. The VM was therefore added a second time as a standard
+resource (`outage-reporter`, private IP, Collector 1) with the properties in
+[§5.3](#53-properties-on-the-ec2-resource); the AWS resource keeps the
+CloudWatch view. Both views of one VM are a reasonable design: CloudWatch
+still reports when the collector is down.
 
 ### 5.2 AWS cloud monitoring: the VM layer
 
