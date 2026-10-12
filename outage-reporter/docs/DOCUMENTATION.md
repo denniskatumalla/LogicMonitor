@@ -900,7 +900,7 @@ Security group `outage-reporter`, which `deploy/aws-up.sh` creates:
 | Port | Source | Why |
 |---|---|---|
 | 22/tcp | **My IP /32** only | SSH, plus `push.sh` |
-| 8080/tcp | 0.0.0.0/0 | The customer pages and the external web check from LM checkpoints. The admin endpoints are not on this port |
+| 8080/tcp | My IP /32 (plus LM's checkpoint ranges if you add the external web check) | The customer pages. Opening it to 0.0.0.0/0 invites constant scanner traffic, which once stalled the JDK HTTP server for 48 minutes; the request timeouts in `JAVA_OPTS` now drop such connections after 10 s. The admin endpoints are not on this port |
 | 8443/tcp | My IP /32 (or 0.0.0.0/0 for the demo) | HTTPS twin. The collector reaches it internally either way |
 | 161, 514, 8081, 9010 | **not opened** | SNMP, syslog, admin and JMX are reached only from the VM itself |
 

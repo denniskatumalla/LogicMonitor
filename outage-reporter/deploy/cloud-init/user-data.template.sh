@@ -62,7 +62,7 @@ OUTAGE_TLS_PORT=8443
 OUTAGE_TLS_KEYSTORE=/etc/outage-reporter/tls.p12
 OUTAGE_TLS_PASSWORD=${TLS_PASSWORD}
 OUTAGE_DATA_DIR=/var/lib/outage-reporter
-JAVA_OPTS="-Xms128m -Xmx256m -XX:+ExitOnOutOfMemoryError"
+JAVA_OPTS="-Dsun.net.httpserver.maxReqTime=10 -Dsun.net.httpserver.maxRspTime=10 -Xms128m -Xmx256m -XX:+ExitOnOutOfMemoryError"
 JMX_OPTS="-Dcom.sun.management.jmxremote.port=9010 -Dcom.sun.management.jmxremote.rmi.port=9010 -Dcom.sun.management.jmxremote.host=${PRIVATE_IP} -Djava.rmi.server.hostname=${PRIVATE_IP} -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false"
 EOF
 chown root:outage /etc/outage-reporter/outage-reporter.env && chmod 0640 /etc/outage-reporter/outage-reporter.env

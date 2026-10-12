@@ -84,7 +84,7 @@ allow() {  # port cidr description
   fi
 }
 allow 22   "$my_ip/32" "SSH from my IP"
-allow 8080 "0.0.0.0/0" "Customer pages and LM external web check"
+allow 8080 "$my_ip/32" "Customer pages (add LM checkpoint ranges for the external web check)"
 allow 8443 "$my_ip/32" "HTTPS from my IP"
 
 step "Instance"
