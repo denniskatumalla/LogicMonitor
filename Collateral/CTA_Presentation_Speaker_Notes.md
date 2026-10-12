@@ -18,13 +18,13 @@ About 2 minutes for this slide and the next together.
 
 I was the technical lead from evaluation through implementation. [Team and what I owned.]
 
-Three kinds of risk. Technical: 5,000+ agents to migrate across application, infrastructure and network. Political: we were displacing a tool that teams had built their workflows around. [Who resisted, and how I won them over.] Timing: change freezes during hurricane season limit when you can cut anything over."
+Three kinds of risk. Technical: 5,000+ agents to migrate across application, infrastructure and network. Political: I was leading the displacement of a tool that teams had built their workflows around. [Who resisted, and how I won them over.] Timing: change freezes during hurricane season limit when you can cut anything over."
 
 ## 3. Phase it, run in parallel, prove it first
 
 About 2 minutes.
 
-"We didn't do a big-bang swap. We migrated in waves, ran both tools in parallel so nobody lost visibility, and only cut a wave over once it reached parity on the alerts and dashboards that mattered. [The hardest technical issue, and how I fixed it.] [A moment something broke, and how I restored it.] The whole time I was also covering [other accounts]; I kept them going by [method].
+"I ruled out a big-bang swap. I planned the migration in waves, ran both tools in parallel so nobody lost visibility, and I only signed off a wave once it reached parity on the alerts and dashboards that mattered. [The hardest technical issue, and how I fixed it.] [A moment something broke, and how I restored it.] The whole time I was also covering [other accounts]; I kept them going by [method].
 
 The result was [tools retired, savings, MTTR or incident change], and the account [renewed / expanded]."
 
@@ -32,31 +32,23 @@ Then: "Happy to go deeper on any part of that."
 
 ## 4. One platform for every layer
 
-About 2 minutes. Left to right: what we monitored, how it was collected, where it was correlated, who acted on it.
+About 2 minutes. Left to right: what I scoped, how it was collected, where it was correlated, who acted on it.
 
-"Customer-facing apps were the priority because outage reporting is what customers see during a storm. DX APM covered those apps, UIM covered the data centers, NetOps did fault isolation across the network, and we added Kubernetes and AWS. Everything fed DX Operational Observability for topology, correlation and service views, then into the NOC, ITSM and executive dashboards."
+"I designed this target architecture. I prioritised the customer-facing apps, because outage reporting is what customers see during a storm. I put DX APM on those apps, UIM across the data centers and NetOps on fault isolation across the network, and I extended coverage to Kubernetes and AWS. I fed everything into DX Operational Observability for topology, correlation and service views, then into the NOC, ITSM and executive dashboards."
 
 Bottom row: "In LogicMonitor terms, hubs and robots become Collector groups, probes become LogicModules driven by AppliesTo, NetOps fault isolation becomes topology and alert dependencies, and alarm correlation becomes Edwin AI. That's the mapping I'd use for a customer moving off UIM or DX."
 
 Trade-offs, if asked: agent vs agentless in restricted zones, polling intervals, SNMPv3 vs v2c, data retention.
 
-## 5. I learn a platform by building on it
+## 5. One environment, two audiences
 
-About 2 minutes.
+About 90 seconds, then switch to the demo.
 
-Left: "Before I had a portal, I built a real LogicModule: a DataSource that monitors TLS certificate expiry and trust on any host and port. If an endpoint is down, it still reports cleanly, so you get one alert that names the real problem instead of missing data. And it runs on both Groovy 2 and Groovy 4 collectors, because collectors in the field aren't all on the same version."
+"I built a small version of the service from my customer story, a utility's outage-reporting site, from a blank AWS account, and I monitored it in LogicMonitor end to end. I deployed the VM and app from code, installed a Collector, connected AWS with a read-only role, and wrote a Groovy DataSource that turns the app's health into technical and business metrics.
 
-Right: "Then I built something closer to the customer story: a small outage-reporting service for a fictional utility. Eight steps, and I'll show you each one in the demo.
-1. Deploy: the VM and the app are built from code, with the AWS CLI and a first-boot script.
-2. Collect: a Collector on the VM, plus a read-only AWS integration, so I can still see the VM if the Collector can't.
-3. Discover: I set properties on the resource, and AppliesTo brings in the SNMP, SSH and JMX modules automatically.
-4. Instrument: a Groovy DataSource that reads the app's health endpoint, with technical and business KPIs.
-5. Test outside-in: an LM Uptime check loads the page and files a test report, the way a customer would.
-6. Correlate: the app's logs land in LM Logs on the same resource.
-7. Act: an alert rule, an escalation chain, and a dashboard with the business view first.
-8. Prove it: I break it on purpose, and each fault raises one alert that names its cause."
+The same environment serves two audiences, so I built two dashboards. An executive asks about outcomes and risk: can customers report an outage, how many are without power, and how long are they waiting for an estimate. An engineer asks what's broken, where, and who has the ticket: latency, errors, the JVM, the OS, the logs, and alerts routed to on-call with one alert per cause.
 
-Then: "Let me show you."
+Let me show you, starting with the executive view."
 
 ## 6. I've done every part of this role
 
