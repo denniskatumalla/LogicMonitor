@@ -1,5 +1,5 @@
 {
-  "_comment": "Module definition and the source of truth for building the DataSource in a portal. Same layout as lm-tls-cert-expiry's module JSON; not LogicMonitor's export format.",
+  "_comment": "Module definition and the source of truth for building the DataSource in a portal; not LogicMonitor's export format.",
   "name": "Outage_Reporter_Health",
   "displayName": "Outage Reporter Health",
   "description": "Technical and business health of the Outage Reporter service (Example Power & Light, fictional), read from its /health endpoint.",

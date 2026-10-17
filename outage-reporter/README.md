@@ -155,9 +155,8 @@ the service restarts. LogicMonitor's COUNTER type assumes a decrease means
 the counter wrapped, and stores a huge spike. DERIVE stores the negative rate
 instead. A valid range with a minimum of 0 rejects that one sample as No Data.
 
-**Failures exit 0.** The script uses the same rule as
-[lm-tls-cert-expiry](../lm-tls-cert-expiry/README.md#why-failures-exit-0):
-a non-zero exit records no data, and no data never alerts. So an unreachable
+**Failures exit 0.** In LogicMonitor a script that exits non-zero records
+no data, and no data never alerts. So an unreachable
 service prints `reachable=0` and nothing else.
 
 **A 503 is an answer, not an outage.** When the service reports DOWN, the

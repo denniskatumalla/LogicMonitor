@@ -1048,8 +1048,8 @@ the portal.
 
 ### 5.6 Application and business layer: `Outage_Reporter_Health`
 
-`module/Outage_Reporter_Health.json` is this repo's spec of the module, in
-the same layout as `lm-tls-cert-expiry`. It is not an LM export. To build it:
+`module/Outage_Reporter_Health.json` is this repo's spec of the module. It
+is not an LM export. To build it:
 
 1. **Modules → Add → DataSource.** Name `Outage_Reporter_Health`, display
    name `Outage Reporter Health`, group `Outage Reporter`. Collect every
