@@ -14,19 +14,27 @@ Today: one customer story, the architecture behind it, the hands-on work I did o
 
 About 2 minutes for this slide and the next together.
 
-"The engagement I want to walk you through ran for over two years at a Fortune 500 electric utility with millions of customers across several states. They were running Dynatrace. The business wanted to consolidate tools and lower cost, get broader coverage across network, infrastructure and legacy systems, and above all keep outage reporting reliable during hurricane season, when customers depend on it most.
+"The engagement I want to walk you through ran for over two years at a Fortune 500 electric utility with millions of customers across several states. They were running Dynatrace for applications and SolarWinds for servers and databases. They were also a big user of our network monitoring, DX NetOps, especially for SD-WAN, which gave me a strong foothold at the customer. The business wanted to consolidate tools and lower cost, get broader coverage across network, infrastructure and legacy systems, and above all keep outage reporting reliable during hurricane season, when customers depend on it most.
 
-I was the technical lead from evaluation through implementation. [Team and what I owned.]
+I was the technical lead from evaluation through implementation. I worked hand in hand with the customer's outsourced monitoring team, six consultants, two in the U.S. and four in India, who owned every monitoring tool, including the Dynatrace we were replacing. I enabled them on the new platform, and every Friday I ran an enablement session open to anyone in the company, so adoption didn't depend on one team. I worked across the TIBCO BusinessWorks and EMS team, the Java team, the system admins and the DBAs to instrument their stacks, and I presented the solution architecture to the customer's Architecture Review Board for approval, more than once.
 
-Three kinds of risk. Technical: 5,000+ agents to migrate across application, infrastructure and network. Political: I was leading the displacement of a tool that teams had built their workflows around. [Who resisted, and how I won them over.] Timing: change freezes during hurricane season limit when you can cut anything over."
+Three kinds of risk. Technical: 5,000+ agents to migrate across application, infrastructure and network. Political: I was leading the displacement of a tool that teams had built their workflows around. The pushback came from the TIBCO team. BusinessWorks is thread-intensive, and they were used to seeing every JVM thread and its state, running, blocked or waiting, in Dynatrace. DX didn't have that view. Timing: change freezes during hurricane season limit when you can cut anything over."
 
 ## 3. Phase it, run in parallel, prove it first
 
 About 2 minutes.
 
-"I ruled out a big-bang swap. I planned the migration in waves, ran both tools in parallel so nobody lost visibility, and I only signed off a wave once it reached parity on the alerts and dashboards that mattered. [The hardest technical issue, and how I fixed it.] [A moment something broke, and how I restored it.] The whole time I was also covering [other accounts]; I kept them going by [method].
+"It started with the PoC. A typical PoC runs a week; this one ran two months, because every team was judging the new platform against a tool it already knew: TIBCO and Java against Dynatrace, the system admins and DBAs against SolarWinds. So I ran it as a separate PoC for each team. As each team joined, I added its objectives and success criteria, and the stakeholders and expectations grew with them. It cost time up front, but every team was satisfied before we migrated anything, so nobody was surprised later.
 
-The result was [tools retired, savings, MTTR or incident change], and the account [renewed / expanded]."
+I ruled out a big-bang swap. I planned the migration in waves, ran both tools in parallel so nobody lost visibility, and I only signed off a wave once it reached parity on the alerts and dashboards that mattered. Nothing was left behind: everything migrated over the two years, with Dynatrace and SolarWinds running in parallel until the last wave.
+
+The hardest gap was that thread view for TIBCO. I built an interim: I automated thread dumps with kill -3 and jcmd Thread.print and turned them into the same running, blocked and waiting picture. That bought time until our product team shipped the feature, within two releases, and I got the TIBCO team, the ones who'd pushed back, to work with us as a design partner and beta-test it.
+
+One wave did break. In the lower environment the Java agent looked great, but the monitoring team had set its profile to High for maximum visibility, where best practice is Medium. High instruments things like socket I/O that you rarely need, and under production load the bytecode instrumentation overhead hurt application performance. The JVM team removed the agent straight away, which was the right call. I ran benchmark tests and recommended restarting on the Low profile, with less visibility, to rebuild trust; once the team was comfortable, I moved them to Medium, which gives the best balance of visibility and overhead.
+
+The whole time I was also the technical owner for 14 other accounts. I could do that because I shared the implementation: I stayed the sole lead technical engineer, but the customer's monitoring team and its platform teams each carried the rollout for their own stack. Inside Broadcom we were a team of eight consultants, and we covered for each other: others picked up some of my tasks when I was stretched, and I did the same for them.
+
+The result: I retired three tools, Dynatrace, SolarWinds and Hyperping for synthetics, cutting their observability tooling cost by 40%. I'll be honest, cost was the most appealing factor for them, and rolling it into an Enterprise License Agreement gave us a lot of leverage. But the bigger change was how they used it. They had used those tools purely for monitoring; I took them to higher-level use cases, more AIOps than they had before, service observability, SLIs and SLOs. That's what won the business stakeholders and the executives, and it drove both the sale and the adoption."
 
 Then: "Happy to go deeper on any part of that."
 
@@ -34,7 +42,7 @@ Then: "Happy to go deeper on any part of that."
 
 About 2 minutes. Left to right: what I scoped, how it was collected, where it was correlated, who acted on it.
 
-"I designed this target architecture. I prioritised the customer-facing apps, because outage reporting is what customers see during a storm. I put DX APM on those apps, UIM across the data centers and NetOps on fault isolation across the network, and I extended coverage to Kubernetes and AWS. I fed everything into DX Operational Observability for topology, correlation and service views, then into the NOC, ITSM and executive dashboards."
+"I designed this target architecture. I prioritised the customer-facing apps, because outage reporting is what customers see during a storm: the outage map and reporting, the customer portal, billing and payments, and the mobile app. Behind them sit the internal systems those apps depend on: the customer information system, outage management, GIS, meter data from the smart meters, and work and asset management, with TIBCO integrating many of them. A slow billing page is often a slow CIS call, so I monitored both sides. I put DX APM on those apps, UIM across the data centers and NetOps on fault isolation across the network, and I extended coverage to Kubernetes and AWS. I fed everything into DX Operational Observability for topology, correlation and service views, then into the NOC, ITSM and executive dashboards."
 
 Bottom row: "In LogicMonitor terms, hubs and robots become Collector groups, probes become LogicModules driven by AppliesTo, NetOps fault isolation becomes topology and alert dependencies, and alarm correlation becomes Edwin AI. That's the mapping I'd use for a customer moving off UIM or DX."
 
