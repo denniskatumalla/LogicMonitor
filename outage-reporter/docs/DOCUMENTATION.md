@@ -1,0 +1,1538 @@
+# Outage Reporter: User & Developer Guide
+
+This guide covers how Outage Reporter and its monitoring fit together, from
+the code up to the LogicMonitor portal. It explains how to build, deploy and
+operate the service, and how to monitor it.
+
+The [README](../README.md) is the design record. It explains *why* the
+domain model, health model, datapoint types and thresholds are what they
+are. This guide covers *how* and *what to type*.
+
+---
+
+## Contents
+
+1. [Quick start](#1-quick-start)
+2. [Architecture](#2-architecture)
+3. [The service](#3-the-service)
+4. [AWS: instance, network, deployment](#4-aws-instance-network-deployment)
+5. [LogicMonitor: layer by layer](#5-logicmonitor-layer-by-layer)
+6. [Alerting: thresholds, timing, routing, dependencies](#6-alerting-thresholds-timing-routing-dependencies)
+7. [Operations](#7-operations)
+8. [Troubleshooting](#8-troubleshooting)
+9. [Ubuntu instead of Amazon Linux](#9-ubuntu-instead-of-amazon-linux)
+10. [What was verified, and how](#10-what-was-verified-and-how)
+11. [Sources](#11-sources)
+
+---
+
+## 1. Quick start
+
+### Prerequisites
+
+| Tool | Why | Verified with |
+|---|---|---|
+| JDK 21+ (`javac`, `jar`, `keytool`) | Build, run, tests (tests generate a keystore) | OpenJDK 25 locally; Corretto 21.0.12 on Amazon Linux 2023 |
+| Groovy (optional) | Collection-script tests, running the script by hand | Groovy 6.0 (JDK 25); Groovy 4.0.33 (JDK 17); Groovy 2.4.16 (JDK 8) |
+| `curl`, `jq` | Poking the API | — |
+| podman (optional) | Rehearsing the cloud-init script in `amazonlinux:2023` | podman 5 |
+
+### Five commands
+
+```bash
+cd outage-reporter
+
+# 1. Build and run every test (offline, ~15 s)
+./run-tests.sh
+
+# 2. Run it locally with chaos enabled, then open http://localhost:8080/
+OUTAGE_ADMIN_TOKEN=dev OUTAGE_DATA_DIR=/tmp/outage java -jar build/outage-reporter.jar
+
+# 3. In another shell: report, track, summarise
+curl -s -XPOST localhost:8080/api/reports -d '{"zip":"00012","address":"412 Bay St"}' | jq
+curl -s localhost:8080/api/reports/<EPL-id> | jq '{status, etr, customersAffected}'
+curl -s localhost:8080/api/areas | jq .totals
+curl -s localhost:8080/health | jq
+
+# 4. What the LogicMonitor collector will see
+groovy scripts/collection.groovy 127.0.0.1:8080
+
+# 5. Break it, watch the script report it, fix it
+curl -s -XPOST -H 'X-Admin-Token: dev' 'localhost:8081/admin/chaos?mode=storm'
+sleep 50; groovy scripts/collection.groovy 127.0.0.1:8080   # awaitingTriage > 150, status=0
+curl -s -XPOST -H 'X-Admin-Token: dev' 'localhost:8081/admin/chaos?mode=off'
+```
+
+To generate customer-like traffic locally, run `TARGET=http://127.0.0.1:8080 deploy/loadgen.sh`.
+
+---
+
+## 2. Architecture
+
+### 2.1 Runtime: one VM, four signal paths into LogicMonitor
+
+```mermaid
+flowchart LR
+    subgraph AWS["AWS account (us-east-1)"]
+        CW[("CloudWatch<br/>EC2 metrics + status checks")]
+        subgraph VM["EC2 c7i-flex.large · Amazon Linux 2023"]
+            APP["outage-reporter.service<br/>Java 21 · :8080 / :8443<br/>admin 127.0.0.1:8081<br/>JMX privateIP:9010"]
+            LG["outage-reporter-loadgen.service<br/>customer-like curl traffic"]
+            J["journald"] --> RS["rsyslog<br/>omfwd UDP"]
+            SNMP["snmpd<br/>privateIP:161"]
+            SSHD["sshd<br/>user lmmonitor"]
+            COL["LogicMonitor Collector<br/>(Small)<br/>syslog UDP 514"]
+            LG --> APP
+            APP -- stdout --> J
+        end
+    end
+
+    subgraph LM["LogicMonitor portal"]
+        RES["Resource: the EC2 instance<br/>(cloud resource + local collector)"]
+        DS["DataSources<br/>Outage_Reporter_Health · Outage_Reporter_JMX<br/>JVM · SNMP Linux · Linux_SSH Service Status<br/>TLS_Certificate_Expiry · AWS_EC2"]
+        LOGS["LM Logs"]
+        UP["LM Uptime<br/>internal check + external multi-step check"]
+        AL["Alerts → rules → escalation chain"]
+        DASH["Dashboard"]
+    end
+
+    CKP["LM public checkpoints"]
+    USER["Customers' browsers"]
+
+    COL -- "HTTP /health (script)" --> APP
+    COL -- JMX --> APP
+    COL -- SNMP --> SNMP
+    COL -- SSH --> SSHD
+    COL -- "TLS handshake :8443" --> APP
+    RS -- "syslog UDP 514" --> COL
+    COL ==> RES
+    COL ==> LOGS
+    CW -- "read-only IAM role" --> RES
+    CKP -- "GET / then POST /report :8080" --> APP
+    USER -- ":8080" --> APP
+    CKP ==> UP
+    RES --> DS --> AL
+    UP --> AL
+    LOGS --> AL
+    DS --> DASH
+    UP --> DASH
+```
+
+Key points:
+
+- **One resource, many sources.** The EC2 instance appears once in
+  LogicMonitor, discovered by the AWS integration. Turning on *monitoring via
+  local collector* for that resource adds the collector-based DataSources
+  (SNMP, JMX, script) to the same resource, so there's no duplicate. LM
+  documents that this "does not result in double billing".
+- **Collector traffic never crosses the security group.** The collector talks
+  to the VM's own private IP. Linux delivers that locally, so 161, 9010, 22
+  and 514 stay closed to the outside world.
+- **Two signals don't depend on the VM.** CloudWatch is read by
+  LogicMonitor's cloud collectors through the IAM role, and the external web
+  check runs from LogicMonitor's public checkpoints. Both keep working when
+  the VM, and the collector on it, are down. See [§6.4](#64-root-cause-and-the-collector-on-the-same-vm).
+
+### 2.2 Layer coverage
+
+| Layer | What answers "is it healthy?" | LogicMonitor feature | Collected by |
+|---|---|---|---|
+| **VM** (infrastructure) | Running state, EC2 status checks, CPU, network, EBS | AWS cloud monitoring (`AWS_EC2` and related) | LM cloud collectors via CloudWatch |
+| **OS** | CPU, memory, filesystems, interfaces, uptime | SNMP Linux modules (LM's primary method); Linux_SSH as a complement | Local collector |
+| **OS → service** | Is `outage-reporter.service` active? | Linux_SSH **Service Status** (`systemctl`) | Local collector |
+| **Runtime** (JVM) | Heap, GC, threads | `Outage_Reporter_JVM` (JMX DataSource built in the portal) via `jmx.port` | Local collector |
+| **Application** (technical) | UP/DEGRADED/DOWN, p95, error rate, store, rates | `Outage_Reporter_Health` (script); `Outage_Reporter_JMX` (graph-only) | Local collector |
+| **Business** | Reports a minute, customers turned away, open outages, customers affected, triage backlog, oldest outage, missed ETRs, storm response | `Outage_Reporter_Health` (same script, same poll) | Local collector |
+| **Customer's view** | Can a customer load the page and submit a report, from inside the VPC and from the internet? | LM Uptime internal web check + external **multi-step** web check | Collector; public checkpoints |
+| **Security hygiene** | Certificate days left and trust on :8443 | LM's built-in SSL Certificates and SSL Certificate Chains | Local collector |
+| **Events** | Access logs, reports received, ticket transitions, storm surges, health transitions, chaos, sshd/auth | LM Logs via syslog LogSource | Local collector (UDP 514) |
+| **Traces** (not built) | Per-request spans | LM APM via the OpenTelemetry Java agent | Direct OTLP to the portal |
+
+### 2.3 Application architecture
+
+One JVM process, `outage.Main`, with no framework and no third-party
+libraries. It has four entry points, a domain core, an append-only file for
+storage, and two background jobs.
+
+```mermaid
+flowchart LR
+    subgraph CLIENTS["Callers"]
+        B["Customer browser"]
+        WC["LM Uptime web checks"]
+        LGEN["Load generator (curl)"]
+        COLS["LM Collector:<br/>Groovy script DataSource"]
+        COLJ["LM Collector:<br/>JMX DataSources"]
+        OPS["Operator: sudo chaos …"]
+    end
+
+    subgraph JVM["outage.Main (one JVM)"]
+        direction TB
+        subgraph EDGE["Entry points"]
+            P8080[":8080 HttpServer<br/>pages · forms · /api · /health"]
+            P8443[":8443 HttpsServer<br/>same routes over TLS"]
+            P8081[":8081 admin HttpServer<br/>loopback + token: /admin/chaos"]
+            MBS["Platform MBeanServer<br/>JMX :9010"]
+        end
+        SRV["OutageServer<br/>routing · fault injection · HTML and JSON responses"]
+        subgraph DOMAIN["Domain"]
+            SVC["OutageService<br/>reports · lookups · area views · KPIs"]
+            TER["Territory<br/>6 areas, ZIP to area"]
+            DISP["Dispatcher<br/>ticket lifecycle"]
+            STORM["StormSurge<br/>simulated storm intake"]
+        end
+        subgraph OBS["Observability"]
+            MET["Metrics<br/>counters + 60 s latency window"]
+            HEALTH["Health<br/>snapshot + UP/DEGRADED/DOWN"]
+            STATS["Stats MBean"]
+            CHAOS["Chaos<br/>fault switch"]
+        end
+        STORE["TicketStore<br/>in-memory maps"]
+        PAGES["Pages<br/>templates + static assets"]
+        LOG["Log<br/>key=value lines"]
+        SCHED["Scheduler thread<br/>1 s and 200 ms ticks"]
+    end
+
+    FILE[("/var/lib/outage-reporter/<br/>tickets.log")]
+    JOURNAL["stdout → journald → rsyslog → LM Logs"]
+
+    B & WC & LGEN --> P8080
+    B --> P8443
+    COLS -- "GET /health" --> P8080
+    COLJ --> MBS
+    OPS --> P8081
+    P8080 & P8443 & P8081 --> SRV
+    MBS --> STATS --> HEALTH
+    SRV --> PAGES
+    SRV --> SVC
+    SRV --> MET
+    SRV --> CHAOS
+    SRV --> HEALTH
+    SVC --> TER
+    SVC --> STORE
+    SCHED --> DISP --> SVC
+    SCHED --> STORM --> SVC
+    STORM -.-> CHAOS
+    STORE -.-> CHAOS
+    STORE --> FILE
+    SRV & DISP & STORM --> LOG --> JOURNAL
+```
+
+**Threads.**
+
+| Thread | Runs | Notes |
+|---|---|---|
+| `main` | `Main.main`: builds the server, then waits on a latch | A shutdown hook calls `OutageServer.close()` on SIGTERM |
+| One virtual thread per request | Every HTTP and HTTPS request, and admin calls | `Executors.newVirtualThreadPerTaskExecutor()`. A slow request (latency fault) costs nothing but its own virtual thread |
+| `dispatcher` (one platform thread) | `Dispatcher.tick` every 1 s and `StormSurge.tick` every 200 ms | A single-thread scheduler, so the dispatcher is the only writer of existing tickets |
+| JMX/RMI threads | `Stats` getters | Each getter takes a fresh `Health` snapshot |
+
+**Data flow in one sentence.** Requests become `Report`s, the service turns
+them into `Ticket`s in the `TicketStore`, the `Dispatcher` moves those
+tickets through their lifecycle, and `/health` and JMX read a `Health`
+snapshot built from `Metrics`, the store and the service's KPIs.
+
+**Concurrency.** Tickets are immutable records, so a reader always sees a
+whole ticket.
+- **Writes** are serialised on the store. A record is appended to the log
+  before the in-memory maps are updated, so nothing a customer was told can
+  be lost in a restart.
+- **New tickets** come from request threads and the storm generator.
+- **Changes to existing tickets** come only from the dispatcher. It shares a
+  single scheduler thread with the storm generator, so it is the one writer
+  of every existing ticket.
+- **Aggregates** iterate a live concurrent view of open tickets and never
+  block writers.
+
+### 2.4 Object model
+
+Every class is in package `outage`, under
+[`src/main/java/outage/`](../src/main/java/outage/). Records are immutable
+values; the rest are long-lived objects that `OutageServer` creates once at
+startup.
+
+```mermaid
+classDiagram
+    direction LR
+
+    class Main {
+        +main(args)$
+    }
+    class Config {
+        <<record>>
+        port, adminPort, adminToken, tlsPort
+        dataDir, triagePerMinute, restoreMinutes
+        stormReportsPerSecond, demoCredit …
+        +fromEnv(env)$ Config
+    }
+    class OutageServer {
+        -HttpServer http, admin
+        -HttpsServer https
+        -ExecutorService executor
+        -ScheduledExecutorService background
+        +start(config)$ OutageServer
+        ~health() Health
+        -handlePublic(exchange)
+        -route(exchange, path) int
+        -submitForm(exchange) int
+        -submitJson(exchange) int
+        -accept(report, channel) Optional~Ticket~
+        -serveHealth(exchange)
+        -handleAdmin(exchange)
+        +close()
+    }
+    class OutageService {
+        -LongAdder reportsTotal
+        +report(report, source) Ticket
+        +reportFailed()
+        +ticket(id) Optional~Ticket~
+        +stormMode() boolean
+        +kpis() Kpis
+        +ticketJson(ticket) Map
+        +zipJson(zip) Map
+        +areasJson() Map
+    }
+    class Kpis {
+        <<record>>
+        reportsLastMinute, failedReportsLastMinute
+        openOutages, customersAffected
+        awaitingTriage, oldestOpenMinutes
+        overdueOutages, stormMode
+    }
+    class TicketStore {
+        -ConcurrentHashMap all, open
+        -BufferedWriter writer
+        +open(dataDir, writesBlocked)$ TicketStore
+        +create(source, report, areaId, now) Ticket
+        +update(ticket)
+        +get(id) Optional~Ticket~
+        +open() Collection~Ticket~
+        +healthy() boolean
+    }
+    class Ticket {
+        <<record>>
+        id, source, zip, areaId, status
+        reportedAt, confirmedAt, crewAssignedAt
+        restoredAt, etrAt, etrRevisions
+        customersAffected
+        +reported(...)$ Ticket
+        +advance(status, at, etr, customers, revisions) Ticket
+        +open() boolean
+        +counts() boolean
+    }
+    class Report {
+        <<record>>
+        zip, address, phone, notes
+        +from(fields)$ Report
+    }
+    class Territory {
+        <<utility>>
+        AREAS: List~Area~
+        +forZip(zip)$ Optional~Area~
+        +byId(id)$ Optional~Area~
+    }
+    class Area {
+        <<record>>
+        id, name, zipFrom, zipTo, customersServed
+    }
+    class Dispatcher {
+        -double budget
+        +tick(now)
+        -confirm(ticket, now, storm)
+        -assignCrew(ticket, now)
+        -move(ticket)
+    }
+    class StormSurge {
+        -double owed
+        +tick(now)
+        -randomReport() Report
+    }
+    class Metrics {
+        -LongAdder requests, serverErrors, clientErrors
+        +record(status, latencyMs)
+        +window() Window
+    }
+    class EventWindow {
+        +add(n)
+        +sum() long
+    }
+    class Health {
+        <<record>>
+        status, uptimeSeconds, p95LatencyMs
+        errorRatePct, storeOk, chaosMode, kpis
+        +classify(storeOk, window, config)$ Status
+        +httpStatus() int
+        +toJson() Map
+    }
+    class Chaos {
+        -volatile Mode mode
+        +mode() Mode
+        +set(mode)
+        +is(mode) boolean
+    }
+    class Stats {
+        +getStatus() String
+        +getAwaitingTriage() int
+        +getP95LatencyMs() double
+        … one getter per datapoint
+    }
+    class StatsMBean {
+        <<interface>>
+    }
+    class Pages {
+        +load(demoCredit)$ Pages
+        +render(template, values) String
+        +asset(name) Optional~Asset~
+        +esc(text)$ String
+    }
+    class Log {
+        <<utility>>
+        +info(event, kv…)$
+        +warn(event, kv…)$
+        +error(event, kv…)$
+    }
+    class Json {
+        <<utility>>
+        +parse(text)$ Object
+        +write(value)$ String
+    }
+
+    Main ..> Config : fromEnv
+    Main --> OutageServer : start / close
+    OutageServer *-- OutageService
+    OutageServer *-- TicketStore
+    OutageServer *-- Dispatcher
+    OutageServer *-- StormSurge
+    OutageServer *-- Metrics
+    OutageServer *-- Chaos
+    OutageServer *-- Pages
+    OutageServer ..> Health : builds
+    OutageServer ..> Stats : registers
+    Stats ..|> StatsMBean
+    Stats ..> Health : reads via OutageServer.health()
+    OutageService --> TicketStore
+    OutageService *-- EventWindow : reports, failedReports
+    OutageService ..> Territory
+    OutageService ..> Kpis : builds
+    Dispatcher --> OutageService
+    StormSurge --> OutageService
+    StormSurge --> Chaos
+    TicketStore o-- Ticket
+    TicketStore ..> Chaos : writesBlocked
+    Ticket ..> Report : created from
+    Territory *-- Area
+    Health *-- Kpis
+```
+
+| Object | Kind | What it is | What it does |
+|---|---|---|---|
+| [`Main`](../src/main/java/outage/Main.java) | Entry point | The process | Reads `Config` from the environment, starts `OutageServer`, waits for SIGTERM and closes it cleanly |
+| [`Config`](../src/main/java/outage/Config.java) | Record | Every setting | Parses `OUTAGE_*` environment variables, with defaults |
+| [`OutageServer`](../src/main/java/outage/OutageServer.java) | Long-lived, owns everything | The application shell | Opens the three listeners, routes each request, applies the active fault, renders pages and JSON, records metrics, builds the `Health` snapshot, registers the MBean, runs the two background jobs, and shuts it all down |
+| [`OutageService`](../src/main/java/outage/OutageService.java) | Long-lived | The business logic | Accepts a `Report` and creates a ticket; looks up tickets; builds the ticket, ZIP and area views; computes the business KPIs; declares storm response from report volume |
+| `OutageService.Kpis` | Record | Business figures at one instant | Reports in the last minute, failed reports, open outages, customers affected, awaiting triage, oldest open outage, overdue outages, storm mode |
+| [`TicketStore`](../src/main/java/outage/TicketStore.java) | Long-lived | Persistence | Keeps every ticket and the open ones in concurrent maps; appends each change to `tickets.log` before updating memory; replays the log on startup; reports whether it can still take writes |
+| [`Ticket`](../src/main/java/outage/Ticket.java) | Immutable record | One outage report | Holds the report and its lifecycle timestamps, ETR and impact. `advance()` returns the next version; nothing is changed in place |
+| [`Report`](../src/main/java/outage/Report.java) | Immutable record | Validated customer input | `Report.from()` checks and normalises ZIP, address, phone and notes, or throws `Report.Invalid` naming the field |
+| [`Territory`](../src/main/java/outage/Territory.java) / `Area` | Static data | The service territory | Six fictional areas, named after LogicMonitor capabilities, plus the synthetic-check ZIP 00099. Maps a ZIP or an id to an area |
+| [`Dispatcher`](../src/main/java/outage/Dispatcher.java) | Background job (1 s) | The outage management system | Confirms reports oldest first within a triage budget, assigns crews, slips some ETRs, restores outages. The only writer of existing tickets |
+| [`StormSurge`](../src/main/java/outage/StormSurge.java) | Background job (200 ms) | The storm simulator | While the fault is `storm`, generates reports in-process, ramping to a set rate and weighted towards the coastal areas |
+| [`Metrics`](../src/main/java/outage/Metrics.java) | Long-lived | Technical golden signals | Counts requests and errors and keeps a 60 s ring of latencies for p95 and error rate |
+| [`EventWindow`](../src/main/java/outage/EventWindow.java) | Helper | A sliding 60 s counter | Backs "reports in the last minute" and "failed reports in the last minute" |
+| [`Health`](../src/main/java/outage/Health.java) | Immutable record | The monitoring contract | One snapshot of status, golden signals, store health, fault mode and KPIs. `classify()` decides UP, DEGRADED or DOWN; `toJson()` is the `/health` body |
+| [`Stats`](../src/main/java/outage/Stats.java) / [`StatsMBean`](../src/main/java/outage/StatsMBean.java) | JMX MBean | The JMX view of `Health` | `outagereporter:type=Stats`, one getter per datapoint, each reading a fresh snapshot |
+| [`Chaos`](../src/main/java/outage/Chaos.java) | Long-lived | The fault switch | Holds the current mode: off, latency, errors, store or storm |
+| [`Pages`](../src/main/java/outage/Pages.java) | Long-lived | The web UI | Loads HTML templates and static files from the jar at startup, fills placeholders, escapes text, adds the optional credit line |
+| [`Log`](../src/main/java/outage/Log.java) | Static utility | Structured logging | Writes `ts=… level=… event=… key=value` lines to stdout for journald and LM Logs |
+| [`Json`](../src/main/java/outage/Json.java) | Static utility | JSON without a library | Parses request bodies and writes responses |
+
+**Ticket lifecycle**, driven by the `Dispatcher`:
+
+```mermaid
+stateDiagram-v2
+    [*] --> REPORTED: OutageService.report()
+    REPORTED --> CONFIRMED: triage, oldest first, within the per-minute budget<br/>sets customers affected and the first ETR
+    REPORTED --> RESTORED: synthetic check (ZIP 00099), closed at once
+    CONFIRMED --> CREW_ASSIGNED: a quarter of the way to the ETR<br/>1 in 4 ETRs slips by 25–50 %
+    CREW_ASSIGNED --> RESTORED: at the ETR
+    RESTORED --> [*]
+```
+
+### 2.5 Object interactions
+
+The sequence diagrams below follow the method calls between objects for the
+five flows that matter: startup, a customer report, a LogicMonitor health
+poll, the dispatcher's tick and a storm.
+
+#### Startup
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant M as Main
+    participant C as Config
+    participant S as OutageServer
+    participant TS as TicketStore
+    participant SVC as OutageService
+    participant P as Pages
+    participant MBS as MBeanServer
+
+    M->>C: fromEnv(System.getenv())
+    M->>S: start(config)
+    S->>S: new Metrics, new Chaos
+    S->>TS: open(dataDir, chaos is STORE)
+    TS->>TS: load() replays tickets.log
+    S->>SVC: new OutageService(store, config, clock)
+    S->>S: new Dispatcher(service), new StormSurge(service, chaos)
+    S->>P: load(config.demoCredit())
+    S->>S: startListeners(): :8080, :8443 if a keystore is set, :8081 if a token is set
+    S->>MBS: registerMBean(new Stats(this::health))
+    S->>S: startBackground(): Dispatcher.tick every 1 s, StormSurge.tick every 200 ms
+    S-->>M: server
+    M->>M: add shutdown hook, then wait
+```
+
+#### A customer submits a report (`POST /report`)
+
+This is the path the external LM Uptime check uses, with ZIP 00099.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as Customer
+    participant S as OutageServer
+    participant CH as Chaos
+    participant R as Report
+    participant SVC as OutageService
+    participant T as Territory
+    participant TS as TicketStore
+    participant P as Pages
+    participant MET as Metrics
+
+    U->>S: POST /report (form)
+    S->>S: handlePublic(exchange)
+    S->>CH: mode()
+    Note over S,CH: latency: sleep 1.5 s. errors: answer 500 to half of requests
+    S->>S: route() then submitForm()
+    S->>R: from(fields)
+    alt invalid input
+        R-->>S: Report.Invalid(field)
+        S->>P: render("message.html") 400 "Please check your report"
+    else valid
+        S->>SVC: report(report, WEB) via accept()
+        SVC->>T: forZip(zip)
+        SVC->>TS: create(source, report, areaId, now)
+        TS->>TS: append "R" record to tickets.log, then put()
+        alt store fault or write failure
+            TS-->>SVC: IOException
+            SVC-->>S: IOException
+            S->>P: render("message.html") 503 "Report not sent"
+        else stored
+            TS-->>SVC: Ticket (REPORTED)
+            SVC->>SVC: reports.add(1)
+            SVC-->>S: Ticket
+            S->>S: Log.info("report_received")
+            S->>P: render("message.html") 200 "Report received"
+        end
+    end
+    S->>MET: record(status, latencyMs)
+    opt any 5xx on a report submission (store failure or the errors fault)
+        S->>SVC: reportFailed()
+    end
+    S->>S: Log.info("access")
+    S-->>U: HTML page
+```
+
+#### LogicMonitor polls health (script DataSource and JMX)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant COL as LM Collector
+    participant S as OutageServer
+    participant ST as Stats (MBean)
+    participant TS as TicketStore
+    participant MET as Metrics
+    participant H as Health
+    participant SVC as OutageService
+
+    alt Groovy script DataSource
+        COL->>S: GET /health
+        S->>S: serveHealth() then health()
+    else JMX DataSource
+        COL->>ST: getAwaitingTriage() and the other getters
+        ST->>S: health.get() is OutageServer.health()
+    end
+    S->>TS: healthy()
+    S->>MET: window()
+    S->>H: classify(storeOk, window, config)
+    Note over S: on a status change, Log.warn("health_changed")
+    S->>SVC: kpis()
+    SVC->>SVC: tallyByArea() over store.open(), EventWindow sums, stormMode()
+    S->>H: new Health(status, …, kpis)
+    alt script
+        S-->>COL: 200 or 503 with Json.write(health.toJson())
+    else JMX
+        ST-->>COL: one attribute value
+    end
+```
+
+#### The dispatcher's tick (every second)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant SCH as Scheduler thread
+    participant D as Dispatcher
+    participant SVC as OutageService
+    participant TS as TicketStore
+    participant TK as Ticket
+
+    SCH->>D: tick(now)
+    D->>D: top up the triage budget
+    D->>SVC: stormMode()
+    D->>SVC: store().open()
+    loop each open ticket
+        alt CONFIRMED and a quarter of the way to the ETR
+            D->>TK: advance(CREW_ASSIGNED, …), maybe a slipped ETR
+            D->>TS: update(next)
+        else CREW_ASSIGNED and the ETR has passed
+            D->>TK: advance(RESTORED, …)
+            D->>TS: update(next)
+        else REPORTED and old enough
+            D->>D: add to the waiting list
+        end
+    end
+    loop waiting, oldest first, while the budget lasts
+        D->>TK: advance(CONFIRMED, now, etr, customers)
+        D->>TS: update(next)
+        D->>D: Log.info("ticket_status")
+    end
+    Note over D,TS: if a write fails: Log.error("dispatcher_paused") and resume on the next good tick
+```
+
+#### A storm (`sudo chaos storm`)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor OP as Operator
+    participant S as OutageServer
+    participant CH as Chaos
+    participant SCH as Scheduler thread
+    participant SS as StormSurge
+    participant SVC as OutageService
+    participant D as Dispatcher
+
+    OP->>S: POST /admin/chaos?mode=storm (X-Admin-Token)
+    S->>S: handleAdmin(): tokenMatches(), Chaos.Mode.parse()
+    S->>CH: set(STORM)
+    S->>S: Log.warn("chaos_mode_changed")
+    loop every 200 ms
+        SCH->>SS: tick(now)
+        SS->>CH: is(STORM)
+        SS->>SS: ramp the rate to 6 reports a second
+        SS->>SVC: report(randomReport(), STORM), several times
+    end
+    loop every 1 s
+        SCH->>D: tick(now)
+        Note over D: confirms at most 180 a minute (3 a second)
+    end
+    Note over SVC,D: reports arrive faster than triage, so awaitingTriage climbs.<br/>stormMode() turns true at 60 or more reports a minute, which shows the banner.<br/>Health.status stays UP: only the business KPI alerts.
+```
+
+---
+
+## 3. The service
+
+### 3.1 Web pages
+
+Every page is server-rendered HTML from templates inside the jar, with one
+stylesheet and one script. Nothing is fetched from a CDN or any other host,
+and a Content-Security-Policy of `default-src 'self'` enforces that.
+
+| Page | Path | What it shows | Without JavaScript |
+|---|---|---|---|
+| Report an outage | `/` | Form with ZIP (required), street address, mobile number, what happened. Safety callout for downed lines | Posts to `/report` and gets a confirmation page with the ticket number |
+| Check status | `/status?ticket=…` or `?zip=…` | **Ticket:** a four-step progress bar with times, ETR (marked "revised" if it slipped), customers affected, last update. **ZIP:** open outages, customers affected, crews working, ETR range. Refreshes every 30 s | A note to turn on JavaScript or call |
+| Service areas | `/areas` | Totals (customers without power, open outages, crews, share out) and a table per area with a share-out bar. The six areas are named after LogicMonitor capabilities. Refreshes every 15 s | A note |
+| How it's monitored | `/monitoring` | Which LogicMonitor capability watches each part of the site, and why the alerts are designed the way they are | Fully readable; static |
+
+States the audience can see:
+
+- **Loading.** The button spins and reads "Sending your report…" or
+  "Checking…". After one second a note says "This is taking longer than
+  usual", so the latency fault is visible.
+- **Field errors.** The server's message sits next to the field, and the
+  field is marked `aria-invalid` and focused.
+- **Service failure** (5xx, a timeout or no connection). "Report not sent.
+  We can't take your report right now — please try again in a few minutes
+  or call 1-800-555-0142."
+- **Area view failure.** A red notice says the information is temporarily
+  unavailable, and the last good numbers stay on screen with their time.
+- **Storm response.** An amber banner on every page: "Storm response in
+  effect. We're receiving a very high number of outage reports. Restoration
+  times are longer than usual and may change." It is rendered by the server,
+  so it works without JavaScript, and the area and ZIP views update it live.
+
+The pages are responsive (the area table becomes stacked cards below 640 px),
+keyboard-accessible with visible focus and a skip link, and honour
+`prefers-reduced-motion`. A ribbon on every page marks the site as a
+LogicMonitor demo. The footer says the utility is fictional and that this is
+not an official LogicMonitor site, plus an optional credit line
+(`OUTAGE_DEMO_CREDIT`).
+
+### 3.2 HTTP API
+
+| Method & path | Success | Errors |
+|---|---|---|
+| `POST /api/reports` body `{"zip":"00012","address":"…","phone":"…","notes":"…"}` | `201` ticket JSON + `Location` | `400 {"error","field"}`, `413` body > 8 KB, `503` store unavailable, `500` (chaos) |
+| `POST /report` form-encoded, same fields | `200` HTML confirmation with `id="ticket-id"` | `400` HTML naming the problem, `503`/`500` HTML "Report not sent" |
+| `GET /api/reports/{id}` (case-insensitive, `EPL-` optional) | `200` ticket JSON | `404` |
+| `GET /api/zip/{zip}` | `200` ZIP summary (no ticket IDs: privacy) | `400` not 5 digits, `404` outside the territory |
+| `GET /api/areas` | `200` totals and per-area figures, `stormMode` | — |
+| `GET /health` | `200` (UP/DEGRADED) or `503` (DOWN), JSON | — |
+| `GET /api` | `200` service info | — |
+| `GET /`, `/status`, `/areas`, `/static/{app.css,app.js,icon.svg}` | `200` | `404` HTML page for unknown paths |
+
+**Report rules.** These are checked on the server; the messages are shown to
+customers as they are.
+- **ZIP.** It must be 5 digits; ZIP+4 is cut to five digits. It must be in
+  00010–00069, or the synthetic 00099. If the ZIP field is empty, a ZIP at
+  the end of the address is used. A JSON number is refused, because `00012`
+  would lose its zeros.
+- **Phone** is optional. US formats are accepted, with any punctuation and an
+  optional `+1`. It is stored as 10 digits and shown as `•••-•••-0123`.
+- **Lengths.** The address may be up to 120 characters and the notes up to
+  500. Control characters and runs of whitespace are collapsed, so a stored
+  field never contains a tab or newline.
+
+**Ticket JSON.**
+
+```json
+{"id":"EPL-ZKTW4X","status":"crew_assigned","statusLabel":"Crew assigned","zip":"00012",
+ "area":{"id":"edwin","name":"Edwin AI District"},"address":"412 Bay St","phone":"•••-•••-0142",
+ "reportedAt":"…","updatedAt":"…","etr":"2026-10-09T15:47:37Z","etrRevisions":1,"customersAffected":86,
+ "timeline":[{"status":"reported","label":"Reported","at":"…"}, … four steps, "at": null until reached]}
+```
+
+### 3.3 The outage model
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `OUTAGE_RESTORE_MINUTES` | `8` | Typical confirmation-to-restoration time. The ETR is 0.75–1.25× this, doubled under storm response |
+| `OUTAGE_TRIAGE_PER_MINUTE` | `180` | Reports the dispatcher can confirm per minute. The bottleneck a storm exceeds |
+| `OUTAGE_TRIAGE_DELAY_SECONDS` | `10` | A report waits at least this long before confirmation, so "Reported" is visible |
+| `OUTAGE_DISPATCH_INTERVAL_MS` | `1000` | Dispatcher tick |
+| `OUTAGE_STORM_REPORTS_PER_SECOND` / `_RAMP_SECONDS` | `6` / `10` | `chaos storm`: peak surge rate and time to reach it |
+| `OUTAGE_STORM_THRESHOLD_PER_MINUTE` | `60` | Reports a minute that declare storm response (banner, doubled ETRs) |
+
+Customers affected per outage is drawn from three sizes:
+- **70 %:** one transformer, 1–12 customers.
+- **25 %:** a lateral, 20–150 customers.
+- **5 %:** a feeder, 300–2,500 customers.
+
+Sums are capped per area at the customers it serves.
+
+| Area | ZIPs | Customers served |
+|---|---|---|
+| Edwin AI District | 00010–00019 | 412,000 |
+| Envision Valley | 00020–00029 | 538,000 |
+| Collector Cove | 00030–00039 | 621,000 |
+| Uptime Ridge | 00040–00049 | 487,000 |
+| Service Insights Park | 00050–00059 | 356,000 |
+| LM Logs Landing | 00060–00069 | 586,000 |
+
+The load generator files a report every 7–40 s, depending on the time of
+the hour. That keeps roughly 15–75 outages open in steady state. A storm lands 45 % of its reports in
+Edwin AI District and 30 % in Envision Valley, the "coast".
+
+### 3.4 Configuration (environment)
+
+All configuration is in `/etc/outage-reporter/outage-reporter.env`. Each
+variable is documented in
+[`deploy/outage-reporter.env.example`](../deploy/outage-reporter.env.example).
+
+| Variable | Default | Notes |
+|---|---|---|
+| `OUTAGE_BIND` / `OUTAGE_PORT` | `0.0.0.0` / `8080` | Public listener |
+| `OUTAGE_TLS_KEYSTORE` / `_PASSWORD` / `_PORT` | unset / — / `8443` | HTTPS twin, enabled when a keystore is set |
+| `OUTAGE_ADMIN_BIND` / `_PORT` / `_TOKEN` | `127.0.0.1` / `8081` / unset | No token means no admin listener |
+| `OUTAGE_DATA_DIR` | `data` | systemd sets `/var/lib/outage-reporter` |
+| `OUTAGE_DEGRADED_P95_MS` / `_ERROR_PERCENT` / `OUTAGE_WINDOW_SECONDS` | `500` / `5` / `60` | Health rules |
+| `OUTAGE_CHAOS_LATENCY_MS` / `_ERROR_PERCENT` | `1500` / `50` | Chaos strength |
+| Outage model and storm | see [§3.3](#33-the-outage-model) | |
+| `OUTAGE_DEMO_CREDIT` | unset | Optional footer line saying who built the demo and for whom. Set per deployment, so it never lives in the repository |
+
+### 3.5 Logs
+
+There is one line per event on stdout. systemd tags each line
+`outage-reporter`, and it flows to journald, then rsyslog, then the
+collector, then LM Logs. No log line carries a customer's address or phone
+number.
+
+```
+ts=2026-10-09T15:02:11.204Z level=INFO event=report_received id=EPL-ZKTW4X zip=00012 area=edwin channel=form synthetic=false
+ts=2026-10-09T15:02:21.880Z level=INFO event=ticket_status id=EPL-ZKTW4X status=confirmed area=edwin etr=2026-10-09T15:10:02Z etrRevisions=0 customers=86
+ts=2026-10-09T15:05:40.118Z level=WARN event=chaos_mode_changed from=off to=storm
+ts=2026-10-09T15:05:40.301Z level=WARN event=storm_surge_started peakReportsPerSecond=6 rampSeconds=10
+ts=2026-10-09T15:05:50.302Z level=INFO event=storm_surge reportsPerSecond=6.0 reports=31 total=31
+ts=2026-10-09T15:09:12.009Z level=ERROR event=store_write_failed error="simulated store failure (chaos mode store)"
+ts=2026-10-09T15:09:12.640Z level=ERROR event=dispatcher_paused error="simulated store failure (chaos mode store)"
+```
+
+| Event | Level | When |
+|---|---|---|
+| `started` / `stopped` | INFO | Lifecycle. `started` includes tickets loaded and open |
+| `access` | INFO | Every public request except `/health` |
+| `report_received` | INFO | A report via the form or API (`channel`, `synthetic`) |
+| `ticket_status` | INFO | A customer ticket moves (confirmed, crew_assigned, restored), with ETR and impact. Storm tickets aren't logged one by one |
+| `storm_surge_started`, `storm_surge_ended` | WARN | The surge starts or stops |
+| `storm_surge` | INFO | Every 10 s during a surge: rate and count |
+| `health_changed` | WARN | Status transition, with the numbers that caused it |
+| `chaos_mode_changed`, `admin_unauthorized` | WARN | Fault injection and failed admin attempts |
+| `store_records_skipped`, `store_reopen_failed` | WARN | Recovered from a torn write; store still failing |
+| `dispatcher_resumed` | INFO | The store took writes again |
+| `store_write_failed`, `dispatcher_paused`, `request_failed`, `startup_failed`, `background_task_failed` | ERROR | Something broke |
+
+Useful LM Logs queries: `event=report_received`, `event=storm_surge`,
+`event=ticket_status status=restored`, `event=health_changed`,
+`level=ERROR`, `status=500`.
+
+### 3.6 JMX
+
+The MBean is `outagereporter:type=Stats`. Every attribute LogicMonitor should
+graph is numeric:
+
+| Attribute | Type | Meaning |
+|---|---|---|
+| `StatusCode` | int | 0 UP, 1 DEGRADED, 2 DOWN |
+| `UptimeSeconds`, `RequestsTotal`, `ErrorsTotal`, `ClientErrorsTotal`, `ReportsTotal` | long | |
+| `Tickets`, `OpenOutages`, `AwaitingTriage`, `OverdueOutages` | int | |
+| `ReportsLastMinute`, `FailedReportsLastMinute`, `CustomersAffected` | long | |
+| `P95LatencyMs`, `ErrorRatePct`, `OldestOpenMinutes` | double | |
+| `StoreOk`, `StormMode` | int | 1 / 0. Ints, not booleans, so the collector reads a number |
+| `ChaosModeCode` | int | 0 off, 1 latency, 2 errors, 3 store, 4 storm |
+| `Status`, `ChaosMode` | String | For people using jconsole |
+
+These are the JVM flags, as set by cloud-init in `JMX_OPTS`:
+
+```
+-Dcom.sun.management.jmxremote.port=9010
+-Dcom.sun.management.jmxremote.rmi.port=9010      # same port: one port to reason about
+-Dcom.sun.management.jmxremote.host=<private-ip>  # bind only there, not 0.0.0.0
+-Djava.rmi.server.hostname=<private-ip>           # the address RMI hands back to clients
+-Dcom.sun.management.jmxremote.authenticate=false
+-Dcom.sun.management.jmxremote.ssl=false
+```
+
+Why the private IP and not `127.0.0.1`? The collector connects to
+`##HOSTNAME##`, the resource's hostname, which for the EC2 resource is its
+private address. If JMX were bound to loopback only, the collector couldn't
+reach it. Binding to the private IP, with 9010 closed in the security group,
+keeps JMX local to the VM in practice. `ProcessTest` launches the real jar
+with exactly these flags, on loopback, and reads both
+`outagereporter:type=Stats` and `java.lang:type=Memory` over remote JMX.
+
+### 3.7 Fault injection
+
+```bash
+sudo chaos latency    # or: errors | store | storm | off;  no argument shows the current mode
+```
+
+`/usr/local/bin/chaos` reads the token from the env file and calls the admin
+listener on loopback. It needs `sudo` because the env file is mode 0640,
+owned by `root:outage`.
+
+---
+
+## 4. AWS: instance, network, deployment
+
+### 4.1 Account and credits (verified 2026-10-06)
+
+Accounts created on or after 15 July 2025 work like this:
+
+- **Credits.** You get USD 100 in credits at sign-up, and up to another USD
+  100 for completing activities. Launching and terminating an EC2 instance is
+  one of them, worth USD 20.
+- **Free plan.** It "ensures you won't incur any charges". It ends after six
+  months or when the credits are used up.
+- **Paid plan.** Credits are used first, then normal pay-as-you-go pricing.
+
+Source:
+[docs.aws.amazon.com/.../free-tier-plans.html](https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/free-tier-plans.html).
+The free-tier-eligible EC2 types for these accounts are `t3.micro`,
+`t3.small`, `t4g.micro`, `t4g.small`, `c7i-flex.large` and `m7i-flex.large`
+([EC2 free tier usage](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-free-tier-usage.html)).
+
+### 4.2 Instance type: **c7i-flex.large** (2 vCPU, 4 GiB)
+
+| Type | vCPU / RAM | us-east-1 Linux $/h | ≈ $/week | Fits app + collector? |
+|---|---|---|---|---|
+| t3.micro / t4g.micro | 2 / 1 GiB | 0.0104 / 0.0084 | 1.75 / 1.41 | No |
+| t3.small / t4g.small | 2 / 2 GiB | 0.0208 / 0.0168 | 3.49 / 2.82 | No: a Small collector alone is about 2 GB |
+| **c7i-flex.large** | **2 / 4 GiB** | **0.08479** | **14.24** | **Yes, with about 1 GB of headroom** |
+| m7i-flex.large | 2 / 8 GiB | 0.09576 | 16.09 | Yes, with plenty to spare |
+
+Why this size:
+
+- **The collector sets the size.** LogicMonitor's Small collector "consumes
+  approximately 2GB system memory". Nano is "intended for testing purposes
+  and not recommended for production"
+  ([adding-collector](https://www.logicmonitor.com/support/adding-collector),
+  [collector-capacity](https://www.logicmonitor.com/support/collector-capacity)).
+- **LM advises against burstable instances.** It says "Avoid burstable,
+  shared-core, or CPU-credit-based instances" and recommends "AWS C- and
+  M-series".
+- **The application is small.** It has a 256 MB heap.
+  Even after a long storm it holds a few thousand tickets of about 300 bytes
+  each.
+- **It's cheap.** About $16 a week all in, against $100–$200 of credits.
+
+Choose **x86_64** Amazon Linux 2023. If you stop the instance before the
+demo, allocate an **Elastic IP**, because the certificate SANs and the
+external check URL contain the address. Run `sudo outage-cert` after you
+associate it.
+
+### 4.3 Security group
+
+Security group `outage-reporter`, which `deploy/aws-up.sh` creates:
+
+| Port | Source | Why |
+|---|---|---|
+| 22/tcp | **My IP /32** only | SSH, plus `push.sh` |
+| 8080/tcp | My IP /32 (plus LM's checkpoint ranges if you add the external web check) | The customer pages. Opening it to 0.0.0.0/0 invites constant scanner traffic, which once stalled the JDK HTTP server for 48 minutes; the request timeouts in `JAVA_OPTS` now drop such connections after 10 s. The admin endpoints are not on this port |
+| 8443/tcp | My IP /32 (or 0.0.0.0/0 for the demo) | HTTPS twin. The collector reaches it internally either way |
+| 161, 514, 8081, 9010 | **not opened** | SNMP, syslog, admin and JMX are reached only from the VM itself |
+
+Outbound: leave the default (all). The collector needs HTTPS (443) out to
+`<portal>.logicmonitor.com`.
+
+### 4.4 Launch
+
+1. `deploy/make-user-data.sh` writes `build/user-data.sh`, which is 14,011
+   bytes; EC2's limit is 16 KB.
+2. In the EC2 console, choose **Launch instance**:
+   - Name `outage-reporter-demo`. Add the tag `Application=outage-reporter`.
+   - AMI: Amazon Linux 2023 (x86_64). Type: `c7i-flex.large`.
+   - Key pair: `outage-reporter`, created if you don't have one.
+   - Network: default VPC, public subnet, auto-assign public IP, the
+     security group from [§4.3](#43-security-group).
+   - Storage: 30 GiB gp3.
+   - Advanced → **Metadata version: V2 only**. **User data**: paste
+     `build/user-data.sh`.
+3. Wait for the status checks to show 2/2. Then:
+
+   ```bash
+   deploy/push.sh ec2-user@<public-dns> ~/.ssh/outage-reporter.pem
+   # prints the /health JSON when the service is up
+   open http://<public-dns>:8080/          # the customer page
+   ssh -i ~/.ssh/outage-reporter.pem ec2-user@<public-dns> sudo cat /root/outage-reporter-lm-properties.txt
+   ```
+
+`push.sh` waits for cloud-init to finish, installs the jar and restarts the
+service and the load generator. Run it again whenever you rebuild.
+
+What cloud-init sets up (template: `deploy/cloud-init/user-data.template.sh`):
+
+| Item | Where |
+|---|---|
+| Corretto 21 headless, rsyslog, net-snmp, jq, xxd (the collector installer needs it) | dnf |
+| 1 GB swap | `/swapfile` |
+| `outage` system user, `/opt/outage-reporter`, `/etc/outage-reporter` (0750) | |
+| Self-signed RSA-2048 certificate, **25 days** (under the 30-day warning threshold), with SANs for the public DNS name, public IP, private IP and localhost. `sudo outage-cert [days]` regenerates it from the current addresses | `/etc/outage-reporter/tls.p12`, `/usr/local/sbin/outage-cert` |
+| Env file with a generated admin token and keystore password | `/etc/outage-reporter/outage-reporter.env` |
+| `outage-reporter.service`, `outage-reporter-loadgen.service` (enabled, started by push.sh) | `/etc/systemd/system/` |
+| `chaos` helper | `/usr/local/bin/chaos` |
+| rsyslog forwarding to `<private-ip>:514/udp` | `/etc/rsyslog.d/60-outage-reporter-lm.conf` |
+| snmpd v2c, generated community, answers only the VM's own addresses | `/etc/snmp/snmpd.conf` |
+| `lmmonitor` user with a PEM key for LM's Linux SSH modules | `/etc/lm-ssh/` |
+| The LM properties to set, with the generated values | `/root/outage-reporter-lm-properties.txt` |
+
+---
+
+## 5. LogicMonitor: layer by layer
+
+The order below is the one the runbook follows. Each step ends with what you
+should see. Menu paths are written from the documentation; the portal UI may
+label them slightly differently.
+
+### 5.1 Collector
+
+1. **Settings → Collectors → Add**, Linux, **size Small** (Medium needs the
+   VM's whole 4 GB). Turn **Monitor the device on which the collector is
+   installed** off and **Enable log collection for Syslog and SNMP trap** on.
+   Choose **Bootstrap**, then **Get cURL cmd**.
+2. On the VM, run that command, then `sudo ./LogicMonitor_Collector_*.bin -y`.
+3. Check: the collector shows as up in the portal, with a recent heartbeat.
+
+Collector 41.x installs as the non-root user `logicmonitor`, with
+user-level systemd services (`logicmonitor-agent`, `logicmonitor-watchdog`).
+That user cannot read the SSH key cloud-init created for the Linux SSH
+modules, so give its group read access:
+
+```bash
+sudo chgrp logicmonitor /etc/lm-ssh /etc/lm-ssh/lmmonitor_id_rsa
+sudo chmod 750 /etc/lm-ssh
+sudo chmod 640 /etc/lm-ssh/lmmonitor_id_rsa
+```
+
+**Where the VM's collector-based monitoring lives.** In the portal used to
+build this demo, the AWS cloud resource offered no local collector in its
+Manage dialog. The VM was therefore added a second time as a standard
+resource (`outage-reporter`, private IP, Collector 1) with the properties in
+[§5.3](#53-properties-on-the-ec2-resource); the AWS resource keeps the
+CloudWatch view. Both views of one VM are a reasonable design: CloudWatch
+still reports when the collector is down.
+
+### 5.2 AWS cloud monitoring: the VM layer
+
+1. **Resources → Add → Cloud and SaaS → AWS**. The wizard shows LM's
+   **Account ID** and an **External ID**.
+2. In AWS IAM, create a role for **another AWS account** with that account ID
+   and *Require external ID*. Attach **`ReadOnlyAccess`**, or LM's tighter
+   minimal policy, and paste the role ARN back into LM.
+3. Limit the integration to **EC2** and **your region**.
+4. Check: the instance appears under the AWS group with `AWS_EC2`
+   datapoints.
+5. Open that resource, then **Collector Assignments**, and turn on **Enable
+   Monitoring via local Collector** with the collector from §5.1.
+
+### 5.3 Properties on the EC2 resource
+
+Copy these from `/root/outage-reporter-lm-properties.txt`:
+
+```
+outage.port         = 8080                         → Outage_Reporter_Health, Outage_Reporter_JMX
+jmx.port            = 9010                         → JVM modules, Outage_Reporter_JMX
+snmp.version        = v2c
+snmp.community      = <generated>                  → SNMP Linux modules
+ssh.user            = lmmonitor
+ssh.cert            = /etc/lm-ssh/lmmonitor_id_rsa → Linux_SSH modules
+linux.ssh.services  = outage-reporter.service      → Service Status discovery
+```
+
+`outage.host` is optional. It overrides `system.hostname` as the script's
+target when they differ.
+
+### 5.4 OS layer
+
+**SNMP (primary).** LogicMonitor's Linux SSH page says the SSH package "is
+designed only for the systems where SNMP is not configured". Once `snmp.*`
+is set, run **Active Discovery** and expect CPU, memory, filesystems and
+interfaces. To check from the VM:
+
+```bash
+snmpget -v2c -c <community> <private-ip> SNMPv2-MIB::sysDescr.0
+```
+
+**Linux SSH (complement): Service Status** for `outage-reporter.service`. The
+`lmmonitor` user is unprivileged and its key is PEM (`ssh-keygen -m PEM`), as
+LM requires. On an EC2 resource you may have to add `Linux_SSH` to
+`system.categories` by hand. That's an inference from the
+`addCategory_Linux_SSH` PropertySource excluding AWS hosts; confirm it in
+the portal.
+
+### 5.5 Runtime layer: JVM via JMX
+
+- **`Outage_Reporter_JVM` (built in the portal).** The module library had
+  only product-specific JVM modules (Hadoop, Solr, Cassandra and the like)
+  and the Collector's own, so nothing matched a plain Java service. Built in
+  **Modules → My Module Toolbox → Add → DataSource** with Collection Method
+  **JMX**, every 1 minute, AppliesTo `jmx.port =~ "^[0-9]+$"`:
+  - `heapUsedBytes`, `heapMaxBytes`: `java.lang:type=Memory`,
+    attributes `HeapMemoryUsage.used` and `.max`
+  - `threadCount`: `java.lang:type=Threading`
+  - `gcYoungCount`, `gcYoungTimeMs`, `gcOldCount`:
+    `java.lang:name=G1 Young Generation,type=GarbageCollector` (and Old),
+    derive with a minimum of 0
+  - complex `heapUsedPct = heapUsedBytes/heapMaxBytes*100`, warning `> 85`,
+    error `> 95`: the only datapoint that alerts
+  - graphs: Heap, Heap %, Garbage collection, Threads
+
+  Read the live MBean names first (they depend on the garbage collector).
+- **`Outage_Reporter_JMX` (optional, graph-only).** Build it from
+  [`module/Outage_Reporter_JMX.json`](../module/Outage_Reporter_JMX.json),
+  with MBean `outagereporter:type=Stats` and the attribute in **separate
+  fields**. Use the same types as the script: derive with a minimum of 0
+  for the `*Total` counters, gauge for everything else. It has no thresholds,
+  so it adds no duplicate alerts.
+
+### 5.6 Application and business layer: `Outage_Reporter_Health`
+
+`module/Outage_Reporter_Health.json` is this repo's spec of the module. It
+is not an LM export. To build it:
+
+1. **Modules → Add → DataSource.** Name `Outage_Reporter_Health`, display
+   name `Outage Reporter Health`, group `Outage Reporter`. Collect every
+   **1 minute**. Turn **Multi-instance off**.
+2. AppliesTo: `outage.port =~ "^[0-9]+$"`
+3. Collector: **Script → Embedded Groovy**. Paste
+   [`scripts/collection.groovy`](../scripts/collection.groovy) **unchanged**.
+4. Datapoints: add one per entry in the JSON, each a normal datapoint with
+   *Key-Value pairs* and the given key.
+   - **Types.** Everything is a gauge except `requestRate`,
+     `serverErrorRate` and `clientErrorRate`. Those three are **derive**
+     with **valid value range min 0**.
+   - **Thresholds:**
+
+     | Datapoint | Threshold |
+     |---|---|
+     | `reachable` | `!= 1` critical |
+     | `storeOk` | `!= 1` critical |
+     | `p95LatencyMs` | `> 500 1000` |
+     | `errorRatePct` | `> 5 20` |
+     | `responseTimeMs` | `> 2000` warning |
+     | **`awaitingTriage`** | **`> 60 150`** |
+     | **`oldestOpenMinutes`** | **`> 60` warning** |
+
+   - Copy the per-datapoint alert subjects and bodies. The business ones say
+     what to do, not just what broke.
+5. Save. **Test Script** against the EC2 resource should print the same lines
+   as `groovy scripts/collection.groovy <private-ip>:8080` run on the VM.
+6. Check, within two polls:
+   - `requestRate` is around 1–3/s and `clientErrorRate` slightly above zero.
+   - `reportsLastMinute` is about 1–9, and `openOutages` is rising towards
+     its steady state of 15–75.
+   - `awaitingTriage` is 0–5, and `status`, `chaosMode` and `stormMode` are 0.
+
+### 5.7 Certificate layer: LogicMonitor's built-in SSL modules
+
+No custom module is needed. LogicMonitor's built-in **SSL Certificates** and
+**SSL Certificate Chains** DataSources find the HTTPS listener on `:8443`
+by themselves and report:
+- `DaysRemaining` on the 25-day self-signed certificate, which raises a
+  **warning** (built-in thresholds: `< 28` warning, `< 7` error, `< 2`
+  critical). Warnings don't page; see §6.3.
+- An untrusted chain, which is honest: the certificate is self-signed. In
+  production you'd use ACM or ACME.
+
+The instance may be labelled after a guessed product (here "Apache Tomcat");
+it is the JDK's own HTTPS server.
+
+### 5.8 Synthetic checks: LM Uptime
+
+LogicMonitor web checks support multiple steps. Each step can use GET, HEAD
+or POST, send form-encoded POST data, check the expected status codes and
+match text in the response. "Follow redirect" is on by default, and internal
+checks offer the same per-step options as external ones. Sources are in
+[§11 Sources](#11-sources).
+
+| Check | Steps | Settings | Shows |
+|---|---|---|---|
+| **Internal web check** (from the collector) | GET `http://<private-ip>:8080/health`, expect 200 | 1 min | Reachability inside the VPC, independent of the script |
+| **External web check** (LM checkpoints): *the customer journey* | 1. GET `http://<public-dns>:8080/`, expect 200, response contains `Report a power outage`. 2. POST `http://<public-dns>:8080/report`, POST data *x-www-form-urlencoded*: `zip=00099`, `notes=LogicMonitor web check`; expect 200, response contains `Report received` | 1 min (or 5 to keep synthetic volume down); all checkpoints; alert after 2 consecutive failures | Whether a customer on the internet can load the page *and* submit a report. Survives the VM and collector being down |
+
+Notes on the external check:
+
+- **ZIP 00099 is the synthetic ZIP.** Its tickets are stored, which proves
+  the write path, then closed on the next dispatcher tick. They never count
+  in any business figure. Five checkpoints a minute add about 7,200 small
+  log records a day.
+- **Step 2 fails when the store is broken** (`503`), so this check goes red
+  for the `store` fault, after about 2–3 minutes. The DataSource names the
+  cause first.
+- **Under `errors` (50 %), a single checkpoint fails about half its POSTs.**
+  How often that alerts depends on the check's location condition. With the
+  default, all locations, a run of failures across every checkpoint is
+  rare. If you set it to "any location", expect a second alert during the
+  `errors` demo.
+- **Latency doesn't fail the check.** Responses are just 1.5 s slower; show
+  that as the check's response-time graph.
+
+LM says not to edit the LM Uptime DataSources' own thresholds. The
+effective transition time is the polling interval × the number of failed
+checks.
+
+### 5.9 LM Logs
+
+1. **Collector side.** LogicMonitor recommends a **syslog LogSource**: "Every
+   LM Collector includes a pre-configured default LogSource for syslog
+   ingestion". The collector listens on **UDP 514**.
+2. **Resource mapping.** rsyslog sends RFC 5424 messages whose HOSTNAME is the
+   VM's name (`ip-172-31-…`), which VPC DNS resolves to the private IP. Map
+   by **IP**, or use the *Static* or *LM Property* method if logs arrive
+   unmapped.
+3. **Check.** Run `logger -t outage-reporter "test from $(hostname)"` and
+   look for it on the resource. Then try `event=report_received` and
+   `event=ticket_status`.
+
+### 5.10 Dashboards: one for executives, one for engineers
+
+Two dashboards in a dashboard group `Outage Reporter`. Bind widgets with
+Resource Group `*`, Resource `outage-reporter` and Instance `*`: a binding on
+a static group showed "No Data".
+
+**Outage Reporter · Executive** (outcomes and risk; Dashboard Time Last 24 hours)
+
+| Row | Widgets |
+|---|---|
+| 1 | **Big Number** `customersAffected` · **Big Number** `openOutages` · **Big Number** `awaitingTriage` |
+| 2 | **Custom Graph** `customersAffected` over 24 hours (min 0) · **Alert List** errors and criticals only · **NOC** the web check's five checkpoints (Web Check Individual, Group By Instance) |
+
+**Outage Reporter · Engineer** (operations; Dashboard Time Last hour)
+
+| Row | Widgets |
+|---|---|
+| 1 | **Custom Graph** `p95LatencyMs` (min 0) · **Custom Graph** `errorRatePct` (0–100) · **NOC** app health checks: one record each for `reachable`, `storeOk`, `p95LatencyMs`, `errorRatePct` |
+| 2 | **Big Number** `awaitingTriage` · **Custom Graph** CPU % · **Custom Graph** memory % (a virtual datapoint, used / total × 100) |
+| 3 | **Custom Graph** `heapUsedPct` · **Alert List** all severities · **Logs** for the resource |
+
+In a storm the two disagree on purpose: the executive view shows customers
+waiting and an error in its alert list, while every engineer health check
+stays green. The fix is triage capacity, not servers.
+
+### 5.11 Not built: traces into LM APM (OpenTelemetry)
+
+Not part of this build; a possible next step. LogicMonitor documents sending OTLP **directly** to the portal,
+without running an OpenTelemetry collector:
+
+```bash
+# On the VM (one-time):
+sudo curl -sL -o /opt/outage-reporter/opentelemetry-javaagent.jar \
+  https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/latest/download/opentelemetry-javaagent.jar
+# Add to JAVA_OPTS in /etc/outage-reporter/outage-reporter.env, then: sudo systemctl restart outage-reporter
+-javaagent:/opt/outage-reporter/opentelemetry-javaagent.jar
+-Dotel.service.name=outage-reporter
+-Dotel.resource.attributes=service.namespace=outage-reporter,host.name=<private-ip>
+-Dotel.exporter.otlp.endpoint=https://<portal>.logicmonitor.com/rest/api
+-Dotel.exporter.otlp.protocol=http/protobuf
+-Dotel.exporter.otlp.headers=Authorization=Bearer <API bearer token with data-ingestion rights>
+-Dotel.metrics.exporter=none -Dotel.logs.exporter=none
+```
+
+These settings come from LM's *trace data forwarding without an OpenTelemetry
+collector* page. The endpoint, protocol, bearer header and
+`service.namespace` are all from there.
+
+**Unverified:** whether the agent automatically creates spans for the JDK's
+built-in `com.sun.net.httpserver` server. If **Traces** shows nothing after a
+few minutes of load, leave traces out rather than debug it live. The agent
+adds roughly 100 MB of RSS, which still fits on c7i-flex.large.
+
+---
+
+## 6. Alerting: thresholds, timing, routing, dependencies
+
+### 6.1 Thresholds
+
+| Source | Datapoint / check | Warning | Error | Critical |
+|---|---|---|---|---|
+| Outage_Reporter_Health | `reachable` | | | `!= 1` |
+| Outage_Reporter_Health | `storeOk` | | | `!= 1` |
+| Outage_Reporter_Health | `p95LatencyMs` | `> 500` | `> 1000` | |
+| Outage_Reporter_Health | `errorRatePct` | `> 5` | `> 20` | |
+| Outage_Reporter_Health | `responseTimeMs` | `> 2000` | | |
+| Outage_Reporter_Health | **`awaitingTriage`** | **`> 60`** | **`> 150`** | |
+| Outage_Reporter_Health | **`oldestOpenMinutes`** | **`> 60`** | | |
+| Outage_Reporter_JVM | `heapUsedPct` | `> 85` | `> 95` | |
+| SSL Certificates (built-in) | `DaysRemaining` | `< 28` | `< 7` | `< 2` |
+| LM Uptime | internal and external web checks | | | after 2 consecutive failures |
+| SNMP / AWS / JVM | LM defaults | Keep them | | |
+
+### 6.2 Expected timing (60 s collection, trigger and clear "immediately")
+
+| Action | What the customer sees | Alert expected | Clears after the fix |
+|---|---|---|---|
+| `sudo chaos latency` | The spinner, then "taking longer than usual"; the report still goes through | `p95LatencyMs` **error** on the next poll: **≤ 60 s** | `chaos off`, then the 60 s window rolls off, then the next poll: **60–120 s** |
+| `sudo chaos errors` | About half of submissions: "Report not sent… call 1-800-555-0142" | `errorRatePct` **error**: ≤ 60 s. `failedReportsLastMinute` climbs without a second alert | 60–120 s |
+| `sudo chaos storm` | Storm banner within about 15 s; area figures climb | `awaitingTriage` warning at about 17 s, **error at about 45 s**, so on the first poll after that: **45–105 s**. Every technical datapoint stays green | The queue drains at 3 a second: the error clears when it's below 150 and the warning when it's below 60. Turned off 30–60 s after the alert: **about 1–2 min** |
+| `sudo chaos store` | Every submission refused; lookups work | `storeOk` **critical**: ≤ 60 s. External check step 2 fails: ~2–3 min | Next poll: ≤ 60 s |
+| `sudo systemctl stop outage-reporter` | The browser can't connect | `reachable` **critical**: ≤ 60 s. Web checks: ~2–3 min. JMX goes to No Data | `systemctl start`: next poll |
+
+**Storm timeline, measured** on this service at default settings, with
+`/health` sampled every 5 s:
+
+| Time after `chaos storm` | `awaitingTriage` |
+|---|---|
+| 10 s | 34 |
+| 20 s | 83 (warning) |
+| 45 s | 156 (error) |
+| 120 s | 393 |
+
+`chaos off` came at 131 s, with the queue at 423. The queue then fell below
+150 at 98 s after that, below 60 at 130 s, and reached zero at 152 s. So
+turn the storm off soon after the alert lands. Every minute it runs adds
+about another minute to the clear.
+
+**Use Poll Now** on the instance's Raw Data tab to collect immediately rather
+than wait for the next 60 s poll.
+
+For production, set the trigger interval to **2 polls** on `p95LatencyMs`,
+`errorRatePct` and `awaitingTriage`.
+
+### 6.3 Rules and escalation chain
+
+- **Escalation chain** `Outage Reporter on-call`: stage 1 emails the on-call
+  engineer, rate-limited to 20 alerts per 10 minutes so an alert storm can't
+  flood on-call. It is also the Collector's **Collector Down** chain.
+- **Alert rules**, both scoped to the group `Outage Reporter Demo`, everything
+  else `*`, notify on clear:
+  - `Outage Reporter errors`: priority 10, level Error
+  - `Outage Reporter criticals`: priority 11, level Critical
+
+  A rule's level matches that severity only, so routing errors and criticals
+  takes one rule each. Until the criticals rule existed, a critical fell
+  through to the built-in Critical rule, whose chain has no recipients.
+- **Warnings** don't page. They show on the engineer dashboard and the alert
+  list.
+- Rules are evaluated in priority order, lowest number first.
+- The email carries the graph; ACK, NEXT and SDT work by replying to it.
+
+### 6.4 Root cause, and the collector on the same VM
+
+It's worth saying out loud in the demo: **the collector runs on the VM it monitors.** When the VM goes down:
+
+- **The collector goes with it.** No collector-based DataSource reports
+  anything, so there's no Outage_Reporter_Health alert at all. The danger is
+  silence, not noise.
+- **What still fires:**
+  - the **collector-down** alert;
+  - **AWS_EC2** status-check and state datapoints, read via CloudWatch;
+  - the **external web check** from public checkpoints, which is the
+    customer-journey check here.
+- **HostStatus is not a demo-able signal here.** It depends on a collector
+  that can see the host. LM suppresses notifications once a host has been
+  unreachable for six minutes and then raises the HostStatus critical. A
+  newly added device needs at least 30 minutes of inaccessibility.
+- **In production**, run two collectors in a collector group elsewhere. Then
+  a VM failure raises `HostStatus` on the VM, and **Dependent Alert Mapping**
+  (Enterprise) marks the application alerts behind it as dependent, so only
+  the root cause pages.
+
+Without DAM, use alert rules for `AWS_EC2` state and status checks, and an
+**SDT** for planned work.
+
+---
+
+## 7. Operations
+
+### 7.1 Everyday commands (on the VM)
+
+```bash
+systemctl status outage-reporter outage-reporter-loadgen
+journalctl -u outage-reporter -f                       # live key=value log
+journalctl -u outage-reporter --since -10min | grep -E 'level=(WARN|ERROR)'
+curl -s localhost:8080/health | jq
+curl -s localhost:8080/api/areas | jq .totals
+sudo chaos                                             # current chaos mode
+sudo systemctl restart outage-reporter                 # counters reset; tickets persist
+ls -lh /var/lib/outage-reporter/tickets.log
+```
+
+### 7.2 Restart behaviour
+
+- `Restart=on-failure`. A crash or `kill -9` comes back in 5 s. `systemctl
+  stop` stays stopped.
+- The JVM exits **143** after its shutdown hook on SIGTERM, and the unit has
+  `SuccessExitStatus=143`. `ProcessTest` checks this.
+- On start, the store replays `tickets.log`. A torn last line is skipped and
+  counted (`store_records_skipped`). The dispatcher then works through
+  whatever is overdue: tickets past their ETR are restored on the first few
+  ticks.
+
+### 7.3 Memory budget (c7i-flex.large, 4 GiB)
+
+| Process | Approx. |
+|---|---|
+| LogicMonitor collector (Small) | ~2 GB (LM's figure) |
+| Outage Reporter JVM (`-Xmx256m`) | ~0.4–0.5 GB |
+| OS, sshd, rsyslog, snmpd, journald | ~0.3–0.5 GB |
+| Headroom + 1 GB swap | ~0.8 GB + swap |
+
+### 7.4 Hardening JMX
+
+```bash
+sudo tee /etc/outage-reporter/jmxremote.password <<< 'lmmonitor <strong-password>'
+sudo tee /etc/outage-reporter/jmxremote.access   <<< 'lmmonitor readonly'
+sudo chown outage:outage /etc/outage-reporter/jmxremote.* && sudo chmod 0400 /etc/outage-reporter/jmxremote.*
+# In JMX_OPTS: authenticate=true plus
+#   -Dcom.sun.management.jmxremote.password.file=/etc/outage-reporter/jmxremote.password
+#   -Dcom.sun.management.jmxremote.access.file=/etc/outage-reporter/jmxremote.access
+```
+
+Then set `jmx.user` and `jmx.pass` on the resource.
+
+### 7.5 Cost control and teardown
+
+- AWS Budgets: a $20 monthly budget with an email at 50 %.
+- When you're done, terminate the instance, release any Elastic IP,
+  delete the IAM role, and remove the AWS integration from LogicMonitor.
+
+---
+
+## 8. Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `push.sh` hangs at `cloud-init status --wait` | First boot is still installing | Wait, or `sudo tail -f /var/log/cloud-init-output.log` |
+| `systemctl status outage-reporter` says *condition failed* | The jar isn't there yet | Run `deploy/push.sh` |
+| `startup_failed ... Address already in use` | Another process has 8080, 8081 or 8443 (another copy of the service?) | `sudo ss -lntp \| grep -E ':(8080\|8081\|8443\|9010)'` |
+| The page loads but submitting says "Report not sent" | A chaos mode is on, or the store is failing | `sudo chaos`; `curl -s localhost:8080/health \| jq .storeOk` |
+| `reachable=0` but curl on the VM works | `system.hostname` isn't an address the app listens on | Set `outage.host` to the private IP |
+| The DataSource doesn't apply | `outage.port` missing or not numeric, or local collector monitoring is off | Check the property; [§5.2](#52-aws-cloud-monitoring-the-vm-layer) step 5 |
+| `awaitingTriage` alert won't clear after `chaos off` | The queue is still being worked off at 3 a second | Expected: about (backlog − 150) ÷ 3 seconds for the error ([§6.2](#62-expected-timing-60-s-collection-trigger-and-clear-immediately)) |
+| `oldestOpenMinutes` warning after the VM was stopped overnight | Reports waiting for triage at the stop get a fresh ETR on start | Clears within about 10 minutes as they restore |
+| `p95LatencyMs` alert won't clear after `chaos off` | The 60 s window still holds slow samples | Wait up to two minutes |
+| External check fails on step 2 only | Store fault, or a wrong POST data type | `curl -s -d 'zip=00099' http://<public-dns>:8080/report \| grep 'Report received'`; set POST data to x-www-form-urlencoded |
+| JVM / JMX modules show No Data | JMX bound to a different IP than the collector uses | `sudo ss -lntp \| grep 9010`; match the `JMX_OPTS` IPs to the resource's hostname |
+| SNMP modules don't appear | Community or version mismatch | `snmpget` from [§5.4](#54-os-layer) |
+| No logs in LM Logs | LogSource not active, or a mapping mismatch | `sudo ss -lunp \| grep 514`; `logger -t outage-reporter hi`; check the mapping |
+| Certificate warning on `:8443` | 25-day self-signed certificate (by design) | [§5.7](#57-certificate-layer-logicmonitors-built-in-ssl-modules) |
+
+---
+
+## 9. Ubuntu instead of Amazon Linux
+
+The user data targets Amazon Linux 2023. The Ubuntu 24.04 differences are:
+- **Packages:** `openjdk-21-jre-headless snmpd snmp jq xxd`.
+- **Service user shell:** `/usr/sbin/nologin`.
+- **Default SSH user:** `ubuntu`.
+- **SNMP:** keep the template's `agentaddress` line, because Ubuntu's default
+  is loopback only.
+
+---
+
+## 10. What was verified, and how
+
+**Tested locally (this repository), 2026-10-06:**
+
+- **`./run-tests.sh`:** 72 JDK tests and 9 collection-script tests, all
+  passing.
+- **`scripts/collection.groovy` in podman,** against a live instance (healthy,
+  storm, store) and against a closed port:
+  - Groovy 2.4.16 / JDK 8 (`groovy:2.4-jdk8`);
+  - Groovy 4.0.33 / JDK 17 (`groovy:4.0-jdk17`).
+- **`build/user-data.sh` end to end in `amazonlinux:2023`,** with
+  `systemctl` stubbed. `hostname` and `openssh-clients`, which the AMI has
+  but the container image lacks, were installed first. Checked:
+  - Corretto 21.0.12, and the keystore valid 25 days with its SANs;
+  - the env file (0640 root:outage), `rsyslogd -N1`, snmpd answering
+    `snmpget` with the generated community, and the PEM SSH key;
+  - the app running as `outage` from the env file, with JMX bound to the
+    container's IP and HTTPS on 8443;
+  - the page and the form POST answering;
+  - `chaos storm` / `chaos` / `chaos off`, and loadgen filing reports.
+- **Both unit files pass `systemd-analyze verify`.** The only warning is
+  that the loadgen path doesn't exist on the build machine.
+- **The pages were rendered in a headless browser:**
+  - report, status (ticket and ZIP), service areas, and areas at phone
+    width;
+  - the storm banner;
+  - the JavaScript submit flow, driven in the page, both successful and
+    under `chaos store`;
+  - the loading states.
+- **The storm timeline was measured in real time at default settings**
+  ([§6.2](#62-expected-timing-60-s-collection-trigger-and-clear-immediately)).
+
+**Checked against vendor documentation on 2026-10-06:**
+- Infrastructure: AWS free tier and instance types, LM
+  collector sizing, SNMP-first Linux, JMX, syslog LogSource, LM Uptime,
+  derive and valid range, DAM and HostStatus.
+- Specific to this application:
+  - LM web checks: multiple steps, GET/HEAD/POST per step, form-encoded POST
+    data, expected status codes and text match, Follow redirect on by
+    default, and the same options on internal checks;
+  - the 555-0100–0199 phone numbers reserved for fictional use;
+  - the lowest real ZIP code, 00501.
+
+URLs and quotes are in [§11 Sources](#11-sources).
+
+**Not verified, so confirm in the portal:**
+
+- the exact UI labels for a web check step's POST data format (the
+  x-www-form-urlencoded type is from LM's API docs and a worked form-login
+  example);
+- whether LM Uptime's text match supports regex (only plain text is needed
+  here);
+- whether there are five public checkpoints (UI docs) or six (older API
+  docs);
+- the exact names of LM's built-in JVM modules;
+- whether `Linux_SSH` must be added to `system.categories` on an EC2
+  resource;
+- the LogSource mapping method that works first time, and the checkpoint IP
+  list;
+- whether the OTel Java agent instruments `com.sun.net.httpserver`;
+- that 00010–00099 will never be assigned. The published fact is that the
+  lowest ZIP is 00501, not that lower numbers are reserved.
+
+---
+
+## 11. Sources
+
+All of these were checked 2026-10-06. LogicMonitor support pages render
+client-side, so their quotes came from the page HTML.
+
+**AWS**
+- Free tier plans: <https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/free-tier-plans.html>.
+  Quotes: "you receive USD $100 in credits after you create an account…
+  earn up to an additional USD $100"; "won't incur any charges… ends after
+  six months or when your credits are fully used".
+- Credit activities: <https://aws.amazon.com/blogs/aws/aws-free-tier-update-new-customers-can-get-started-and-explore-aws-with-up-to-200-in-credits/>
+- Eligible EC2 types: <https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-free-tier-usage.html>.
+  Quote: "`t3.micro`, `t3.small`, `t4g.micro`, `t4g.small`, `c7i-flex.large`, `m7i-flex.large`".
+- Specs: <https://docs.aws.amazon.com/ec2/latest/instancetypes/gp.html>,
+  <https://docs.aws.amazon.com/ec2/latest/instancetypes/co.html>
+- Prices: the AWS Price List API EC2 us-east-1 offer file. Quote: "$0.08479
+  per On Demand Linux c7i-flex.large Instance Hour".
+- Public IPv4 ($0.005/h): <https://aws.amazon.com/vpc/pricing/>
+- EBS free tier (30 GB): <https://aws.amazon.com/ebs/pricing/>
+- User data runs as root, first boot only: <https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/user-data.html>
+- Corretto 21 on Amazon Linux: <https://docs.aws.amazon.com/corretto/latest/corretto-21-ug/amazon-linux-install.html>
+
+**LogicMonitor**
+- Collector sizes: <https://www.logicmonitor.com/support/adding-collector>.
+  Quotes: Small "approximately 2GB"; Nano "intended for testing purposes".
+- Capacity, and the advice against burstable instances: <https://www.logicmonitor.com/support/collector-capacity>
+- Linux via SSH (SNMP preferred; Service Status): <https://www.logicmonitor.com/support/monitoring/os-virtualization/linux-via-ssh-monitoring>
+- Credentials properties (ssh.*, jmx.*, snmp.*): <https://www.logicmonitor.com/support/getting-started/advanced-logicmonitor-setup/defining-authentication-credentials>
+- Java/JMX: <https://www.logicmonitor.com/support/monitoring/applications-databases/java-applications>,
+  <https://www.logicmonitor.com/support/jmx-active-discovery>,
+  <https://www.logicmonitor.com/support/logicmodules/datasources/data-collection-methods/jmx-data-collection>
+- AWS setup: <https://www.logicmonitor.com/support/aws-monitoring-setup>.
+  Local collector on cloud resources: <https://www.logicmonitor.com/support/cloud-monitoring-using-a-collector>
+- Syslog LogSource: <https://www.logicmonitor.com/support/syslog-logsource-configuration>.
+  agent.conf settings: <https://www.logicmonitor.com/support/agent-conf-collector-settings>
+- Web checks: <https://www.logicmonitor.com/support/adding-a-web-check>,
+  <https://www.logicmonitor.com/support/internal-web-checks-using-lm-uptime>,
+  <https://www.logicmonitor.com/support/alerts-for-lm-uptime>
+- Datapoints (counter/derive, valid range, trigger and clear): <https://www.logicmonitor.com/support/logicmodules/datasources/datapoints/normal-datapoints-legacyui>,
+  <https://www.logicmonitor.com/support/logicmodules/modules/datapoints/datapoint-overview>
+- Groovy 4 only from GD-39.004: <https://www.logicmonitor.com/release-notes/gd-collector-39-004>
+- Dependent Alert Mapping: <https://www.logicmonitor.com/support/dependent-alert-mapping>.
+  HostStatus: <https://www.logicmonitor.com/support/logicmodules/datasources/creating-managing-datasources/host-status-host-behavior>
+- Alert rules: <https://www.logicmonitor.com/support/alert-rules>.
+  Escalation chains: <https://www.logicmonitor.com/support/escalation-chains>
+- OTLP without a collector: <https://www.logicmonitor.com/support/trace-data-forwarding-without-an-opentelemetry-collector>
+- Widgets: <https://www.logicmonitor.com/support/dashboards-and-widgets/overview/what-are-widgets>
+
+**LM Uptime web checks**
+
+- **LM web check steps:**
+  <https://www.logicmonitor.com/support/web-check-steps-analysis-in-lm-uptime>.
+  Quotes:
+  - "In the Method field, select the HTTP method (GET, HEAD, or POST) that
+    must be used to make the request";
+  - "If you select the POST option, additional configurations display that
+    allow you to specify the data to be included in the request payload";
+  - "Toggle on the Follow redirect switch … This toggle is on by default";
+  - "If no status is specified, a 200/OK response is expected";
+  - "specify format-specific criteria that must be included in (or absent
+    from) the response … the entry is case-sensitive".
+- **Internal checks have the same request settings:**
+  <https://www.logicmonitor.com/support/internal-web-checks-using-lm-uptime>.
+  Quote: "In the Method field under Request section, select the HTTP method
+  (GET, HEAD, or POST)".
+- **Form-encoded POST data (REST API v3):**
+  <https://www.logicmonitor.com/support/adding-uptime-devices>. Quote: "If
+  set to x-www-form-urlencoded, the HTTPBody must follow the key-value
+  format".
+- **Worked form example:**
+  <https://www.logicmonitor.com/support/web-checks-with-form-based-authentication>.
+  Quote: "Method: POST / Post Data: x-www-form-urlencoded".
+- **Checkpoints:**
+  <https://www.logicmonitor.com/support/external-web-checks-using-lm-uptime>.
+  Quote: "LogicMonitor hosts five geographically dispersed checkpoints".
+- **Alert timing:** <https://www.logicmonitor.com/support/alerts-for-lm-uptime>.
+  Quote: "Effective Transition = Polling Interval × Failed Check".
+- **Selenium synthetics (not used; needs a Selenium Grid 4 and Collector
+  34.100+):** <https://www.logicmonitor.com/support/selenium-monitoring-setup>
